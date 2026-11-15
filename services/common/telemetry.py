@@ -33,7 +33,7 @@ def setup_tracing(service: str, *, fastapi_app=None, httpx_client: bool = False,
         "service.name": service,
         "service.namespace": "shop",
         "service.version": os.getenv("SERVICE_VERSION", "1.0.0"),
-        "deployment.environment": os.getenv("DEPLOYMENT_ENV", "coursework"),
+        "deployment.environment": os.getenv("DEPLOYMENT_ENV", "education"),
     })
     ratio = float(os.getenv("OTEL_TRACES_SAMPLER_RATIO", "1.0"))
     provider = TracerProvider(resource=resource, sampler=ParentBased(TraceIdRatioBased(ratio)))
