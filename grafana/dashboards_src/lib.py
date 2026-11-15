@@ -121,9 +121,9 @@ class Dashboard:
         }, w, h)
 
     def bargauge(self, title: str, targets: list[dict], *, unit: str = "short", w: int = 12,
-                 h: int = 8, description: str = "") -> dict:
+                 h: int = 8, description: str = "", ds: dict = PROM) -> dict:
         return self.add({
-            "type": "bargauge", "title": title, "description": description, "datasource": PROM,
+            "type": "bargauge", "title": title, "description": description, "datasource": ds,
             "targets": targets,
             "fieldConfig": {"defaults": {"unit": unit, "min": 0, "color": {"mode": "continuous-BlYlRd"},
                                          "thresholds": _thresholds([("green", None)])},

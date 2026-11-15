@@ -24,7 +24,7 @@ _EXCLUDED_URLS = "health,metrics"
 
 
 def setup_tracing(service: str, *, fastapi_app=None, httpx_client: bool = False,
-                  psycopg: bool = False, aio_pika: bool = False) -> trace.Tracer:
+                  psycopg: bool = False, aio_pika: bool = False, sqlite3: bool = False) -> trace.Tracer:
     """Configure the global tracer provider and enable instrumentations."""
     if os.getenv("OTEL_SDK_DISABLED", "false").lower() == "true":
         return trace.get_tracer(service)
@@ -56,6 +56,9 @@ def setup_tracing(service: str, *, fastapi_app=None, httpx_client: bool = False,
     if aio_pika:
         from opentelemetry.instrumentation.aio_pika import AioPikaInstrumentor
         AioPikaInstrumentor().instrument()
+    if sqlite3:
+        from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
+        SQLite3Instrumentor().instrument()
 
     log.info("tracing enabled", extra={"otlp_endpoint": endpoint, "sample_ratio": ratio})
     return trace.get_tracer(service)

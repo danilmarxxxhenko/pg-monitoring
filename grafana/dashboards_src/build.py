@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib import LOKI, TEMPO, Dashboard, loki_target, mapping_up_down, target
+from lib import LOKI, PROM, TEMPO, Dashboard, loki_target, mapping_up_down, target
 
 OUT = Path(__file__).resolve().parent.parent / "provisioning" / "dashboards" / "json"
 DB = 'datname="$db"'
@@ -354,11 +354,82 @@ def logs_traces_dashboard() -> Dashboard:
     return d
 
 
+def security_dashboard() -> Dashboard:
+    d = Dashboard("security", "Безпека", ["pgmon", "security"],
+                  description="Автентифікація та авторизація: власний auth-сервіс (FastAPI + SQLite) і nginx auth_request",
+                  time_from="now-1h")
+    d.link("Інші дашборди", ["pgmon"])
+    rng = "[$__range]"
+
+    d.row("Огляд за період")
+    d.stat("Успішні входи", f'sum(increase(auth_login_total{{result="success"}}{rng})) or vector(0)',
+           decimals=0, graph=False, w=4)
+    d.stat("Невдалі входи", f'sum(increase(auth_login_total{{result!="success"}}{rng})) or vector(0)',
+           decimals=0, graph=False, w=4, thresholds=[("green", None), ("orange", 5), ("red", 20)])
+    d.stat("Заблоковано (throttling)", f'sum(increase(auth_login_total{{result="throttled"}}{rng})) or vector(0)',
+           decimals=0, graph=False, w=4, thresholds=[("green", None), ("red", 1)],
+           description="Спроби після 10 невдалих входів за 5 хв з тієї ж IP для того ж логіна (HTTP 429)")
+    d.stat("Відмови 401 (немає / недійсна сесія)",
+           f'sum(increase(auth_denied_total{{reason=~"missing|invalid|expired|revoked|inactive"}}{rng})) or vector(0)',
+           decimals=0, graph=False, w=4)
+    d.stat("Відмови 403 (недостатньо прав)", f'sum(increase(auth_denied_total{{reason="forbidden"}}{rng})) or vector(0)',
+           decimals=0, graph=False, w=4, thresholds=[("green", None), ("orange", 1)])
+    d.custom({"type": "piechart", "title": "Користувачі за ролями", "datasource": PROM,
+              "targets": [target("sum by (role) (auth_users)", "{{role}}", instant=True)],
+              "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+              "options": {"pieType": "donut", "legend": {"displayMode": "list", "placement": "right", "values": ["value"]},
+                          "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}}}, w=4, h=4)
+
+    d.row("Автентифікація")
+    d.timeseries("Спроби входу за результатом", [
+        target("sum by (method, result) (rate(auth_login_total[1m])) * 60", "{{method}}: {{result}}"),
+    ], stack=True, draw="bars", fill=80, description="Кількість за хвилину; method = form (браузер) або api (сервіси)",
+        overrides=[{"matcher": {"id": "byRegexp", "options": ".*success"},
+                    "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]},
+                   {"matcher": {"id": "byRegexp", "options": ".*bad_credentials"},
+                    "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+                   {"matcher": {"id": "byRegexp", "options": ".*throttled"},
+                    "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "purple"}}]}])
+    d.timeseries("Перевірки сесій (/verify)", [
+        target("sum by (scope, result) (rate(auth_verify_total[1m]))", "{{scope}}: {{result}}"),
+    ], unit="ops", stack=True,
+        description="scope=any — order-api; grafana — вхід у Grafana через nginx; admin — /prometheus/ і /chaos")
+    d.timeseries("Відмови в доступі за причинами", [
+        target("sum by (reason) (rate(auth_denied_total[1m])) * 60", "{{reason}}"),
+    ], stack=True, w=8, description="Кількість за хвилину")
+    d.timeseries("HTTP 401 / 403 / 429 на вході (nginx)", [
+        loki_target('sum by (status) (count_over_time({service="nginx"} | json | status=~"401|403|429" [1m]))',
+                    legend="{{status}}"),
+    ], ds=LOKI, stack=True, draw="bars", fill=80, w=8, description="З access-логів nginx у Loki")
+    d.timeseries("401 від Order API (без / з недійсним токеном)", [
+        target('sum(rate(http_request_duration_seconds_count{job="order-api",status="401"}[1m])) * 60 or vector(0)', "401"),
+    ], w=8)
+
+    d.row("Аналіз атак")
+    d.bargauge("Топ IP за невдалими входами", [
+        loki_target(f'topk(10, sum by (client_ip) (count_over_time({{service="auth"}} | json | event="login_failed" {rng})))',
+                    legend="{{client_ip}}", query_type="instant"),
+    ], ds=LOKI, w=8, h=8)
+    d.bargauge("Топ логінів, які намагаються підібрати", [
+        loki_target(f'topk(10, sum by (username) (count_over_time({{service="auth"}} | json | event="login_failed" {rng})))',
+                    legend="{{username}}", query_type="instant"),
+    ], ds=LOKI, w=8, h=8)
+    d.timeseries("Навантаження на вході (nginx)", [
+        target("sum(rate(nginx_http_requests_total[1m]))", "запитів/с"),
+        target("sum(nginx_connections_active)", "активні з'єднання", "B"),
+    ], w=8, h=8)
+    d.logs("Події безпеки (auth)",
+           '{service="auth"} | json | event=~"login_failed|login_success|access_forbidden|logout|user_.*"', h=10)
+    d.logs("Відмови на вході (nginx 401/403/429)", '{service="nginx"} | json | status=~"401|403|429"', h=8)
+    return d
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     postgres_dashboard().write(OUT, "postgres.json")
     application_dashboard().write(OUT, "application.json")
     logs_traces_dashboard().write(OUT, "logs-traces.json")
+    security_dashboard().write(OUT, "security.json")
 
 
 if __name__ == "__main__":

@@ -21,10 +21,23 @@ docker compose up -d
 
 Перевірка: `make smoke`.
 
-## Поточний стан (етап 3)
+Відкрийте http://localhost/ — без сесії nginx перенаправить на сторінку входу.
+
+| Обліковий запис | Роль | Доступ |
+|---|---|---|
+| `AUTH_ADMIN_USER` / `AUTH_ADMIN_PASSWORD` з `.env` | admin | Grafana (Admin + Server Admin), `/prometheus/`, `/chaos`, CRUD користувачів |
+| `AUTH_VIEWER_USER` / `AUTH_VIEWER_PASSWORD` | viewer | Grafana (Viewer) |
+| `AUTH_SERVICE_USER` / `AUTH_SERVICE_PASSWORD` | service | лише API (`POST /api/token`), без доступу до UI |
+
+Назовні публікується лише порт nginx (80) і, для налагодження, RabbitMQ management на `127.0.0.1:15672`.
+
+## Поточний стан (етап 4)
 
 | Сервіс | Призначення |
 |---|---|
+| `nginx` | **єдина точка входу** (порт 80): `auth_request` до auth, `/grafana/`, `/prometheus/` (лише admin), `/api/` → order-api |
+| `auth` | сервер авторизації (FastAPI + SQLite, bcrypt, JWT): `/login`, `/api/token`, `/verify`, `/logout`, CRUD користувачів |
+| `nginx-exporter` | метрики nginx (stub_status) для Prometheus |
 | `postgres` | PostgreSQL 16 з `pg_stat_statements`, схема й сид-дані з `postgres/init/` |
 | `postgres-exporter` | метрики СУБД, зокрема колектор `stat_statements` |
 | `rabbitmq` | брокер повідомлень: `orders` → `payments.order-created` (+ DLQ), fanout `control` для режимів хаосу; метрики на `:15692`; UI для налагодження на `http://127.0.0.1:15672` |
@@ -35,7 +48,7 @@ docker compose up -d
 | `alloy` | збирає логи всіх контейнерів через Docker API → Loki; приймає OTLP-трейси → Tempo |
 | `loki` | зберігання логів (JSON-логи сервісів, `trace_id` як structured metadata) |
 | `tempo` | зберігання трейсів; metrics generator будує service graph і span metrics |
-| `grafana` | дашборди «СУБД PostgreSQL», «Застосунок», «Логи і трейси»; кореляції метрики ↔ трейси ↔ логи; тимчасово на `http://127.0.0.1:3000`, логін і пароль задаються `GRAFANA_ADMIN_*` у `.env` |
+| `grafana` | дашборди «СУБД PostgreSQL», «Застосунок», «Логи і трейси», «Безпека»; режим `auth.proxy` за nginx, власна форма входу вимкнена |
 
 Дашборди генеруються скриптом `grafana/dashboards_src/build.py` (Python 3, без залежностей) у `grafana/provisioning/dashboards/json/`.
 

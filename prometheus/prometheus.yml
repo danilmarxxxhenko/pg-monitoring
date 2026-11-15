@@ -59,7 +59,20 @@ scrape_configs:
           service: alloy
 
   - job_name: grafana
+    metrics_path: /grafana/metrics
     static_configs:
       - targets: ["grafana:3000"]
         labels:
           service: grafana
+
+  - job_name: auth
+    static_configs:
+      - targets: ["auth:8000"]
+        labels:
+          service: auth
+
+  - job_name: nginx
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+        labels:
+          service: nginx

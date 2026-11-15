@@ -30,10 +30,43 @@ stmts=$(prom_get '/api/v1/query?query=count(pg_stat_statements_calls_total)' | p
 import sys, json; r = json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else 0)')
 if [[ "${stmts%.*}" -gt 0 ]]; then pass "pg_stat_statements metrics collected ($stmts statements)"; else fail "no pg_stat_statements metrics"; fi
 
+echo "== Access control (nginx + auth)"
+set -a; source .env; set +a
+BASE="http://localhost:${HTTP_PORT:-80}"
+JAR=$(mktemp)
+trap 'rm -f "$JAR"' EXIT
+code_of() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+
+redirect=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$BASE/grafana/d/pg-overview")
+if [[ "$redirect" == 302*"/login?next="* ]]; then pass "Grafana without session -> 302 to /login"; else fail "Grafana without session -> $redirect"; fi
+code=$(code_of -c "$JAR" -X POST --data-urlencode "username=$AUTH_ADMIN_USER" \
+  --data-urlencode "password=$AUTH_ADMIN_PASSWORD" -d next=/grafana/ "$BASE/login")
+if [[ "$code" == 303 ]]; then pass "admin login -> 303 with session cookie"; else fail "admin login -> $code"; fi
+code=$(code_of -b "$JAR" "$BASE/grafana/d/pg-overview")
+if [[ "$code" == 200 ]]; then pass "Grafana with session -> 200"; else fail "Grafana with session -> $code"; fi
+role=$(curl -s -b "$JAR" "$BASE/grafana/api/user/orgs" | python3 -c 'import sys, json; print(json.load(sys.stdin)[0]["role"])' 2>/dev/null)
+if [[ "$role" == Admin ]]; then pass "auth.proxy maps role admin -> Grafana Admin"; else fail "Grafana role for admin: $role"; fi
+code=$(code_of -b "$JAR" "$BASE/prometheus/-/ready")
+if [[ "$code" == 200 ]]; then pass "admin can open /prometheus/"; else fail "admin /prometheus/ -> $code"; fi
+: > "$JAR"
+curl -s -o /dev/null -c "$JAR" -X POST --data-urlencode "username=$AUTH_VIEWER_USER" \
+  --data-urlencode "password=$AUTH_VIEWER_PASSWORD" -d next=/ "$BASE/login"
+code=$(code_of -b "$JAR" "$BASE/prometheus/")
+if [[ "$code" == 403 ]]; then pass "viewer is denied /prometheus/ (403)"; else fail "viewer /prometheus/ -> $code"; fi
+code=$(code_of "$BASE/api/products?limit=1")
+if [[ "$code" == 401 ]]; then pass "Order API without token -> 401"; else fail "Order API without token -> $code"; fi
+token=$(curl -s -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$AUTH_SERVICE_USER\",\"password\":\"$AUTH_SERVICE_PASSWORD\"}" "$BASE/api/token" \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])' 2>/dev/null)
+code=$(code_of -H "Authorization: Bearer $token" "$BASE/api/products?limit=1")
+if [[ "$code" == 200 ]]; then pass "Order API with service token -> 200"; else fail "Order API with token -> $code"; fi
+open_ports=""
+for port in 3000 3100 3200 4317 4318 5432 9090 12345; do
+  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then open_ports="$open_ports $port"; fi
+done
+if [[ -z "$open_ports" ]]; then pass "internal ports are not published on the host"; else fail "published internal ports:$open_ports"; fi
+
 echo "== Order API and RabbitMQ"
-http_code() { docker run --rm --network "${COMPOSE_PROJECT_NAME:-pgmon}_default" curlimages/curl:8.23.0 -s -o /dev/null -w '%{http_code}' "$@"; }
-code=$(http_code "http://order-api:8000/products?limit=1")
-if [[ "$code" == 200 ]]; then pass "order-api GET /products -> 200"; else fail "order-api GET /products -> $code"; fi
 consumers=$(prom_get '/api/v1/query?query=sum(rabbitmq_queue_consumers%7Bqueue%3D%22payments.order-created%22%7D)' | python3 -c '
 import sys, json; r = json.load(sys.stdin)["data"]["result"]; print(int(float(r[0]["value"][1])) if r else 0)')
 if [[ "$consumers" -gt 0 ]]; then pass "payments queue has $consumers consumer(s)"; else fail "payments queue has no consumers"; fi

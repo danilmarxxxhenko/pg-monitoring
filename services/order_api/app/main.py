@@ -9,6 +9,7 @@ from typing import Annotated
 import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from prometheus_client import Counter
 from psycopg_pool import AsyncConnectionPool
 from starlette.responses import JSONResponse
@@ -86,7 +87,9 @@ def repo(request: Request) -> Repository:
 async def health(request: Request):
     problems = []
     try:
-        await repo(request).ping()
+        # Healthchecks run every few seconds: keep them out of the traces
+        with suppress_instrumentation():
+            await repo(request).ping()
     except Exception as exc:  # noqa: BLE001
         problems.append(f"db: {exc!r}")
     if not request.app.state.publisher.connected:
