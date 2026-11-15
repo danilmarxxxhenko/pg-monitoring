@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from prometheus_client import Counter
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
@@ -16,7 +17,7 @@ from common.metrics import metrics_response
 from common.telemetry import setup_tracing
 
 from .catalog import Catalog
-from .chaos import MODES, chaos
+from .chaos import chaos
 from .config import settings
 from .jobs import start_jobs
 from .metrics import ACTIVE_USERS, TARGET_RPS
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
                                limits=httpx.Limits(max_connections=100, max_keepalive_connections=50))
     api = ApiSession(client)
     await api.login()
+    await chaos.start(client, catalog.product_ids)
 
     tasks = start_jobs(pool)
     tasks += [asyncio.create_task(Shopper(i, api, catalog).run(), name=f"shopper-{i}")
@@ -50,6 +52,7 @@ async def lifespan(app: FastAPI):
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await chaos.close()
         await client.aclose()
         await pool.close()
 
@@ -74,17 +77,37 @@ async def metrics(request: Request):
 
 @app.get("/chaos")
 async def get_chaos() -> dict:
-    return {"mode": chaos.mode, "available": MODES}
+    return chaos.status()
 
 
 @app.post("/chaos")
 async def set_chaos(req: ChaosRequest) -> dict:
     try:
-        chaos.set(req.mode)
+        await chaos.set(req.mode)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     TARGET_RPS.set(settings.rps * chaos.rps_multiplier)
-    return {"mode": chaos.mode}
+    return chaos.status()
+
+
+ALERTS_RECEIVED = Counter("alerts_received_total", "Grafana alert notifications received", ["alertname", "status"])
+
+
+@app.post("/alerts")
+async def receive_alerts(request: Request) -> dict:
+    """Webhook contact point of Grafana alerting: every notification becomes a log line."""
+    payload = await request.json()
+    for alert in payload.get("alerts", []):
+        name = alert.get("labels", {}).get("alertname", "unknown")
+        status = alert.get("status", payload.get("status", "unknown"))
+        ALERTS_RECEIVED.labels(name, status).inc()
+        log.warning("ALERT %s: %s", status.upper(), name, extra={
+            "event": "alert", "alertname": name, "alert_status": status,
+            "severity": alert.get("labels", {}).get("severity", ""),
+            "summary": alert.get("annotations", {}).get("summary", ""),
+            "started_at": alert.get("startsAt", ""),
+        })
+    return {"received": len(payload.get("alerts", []))}
 
 
 if __name__ == "__main__":

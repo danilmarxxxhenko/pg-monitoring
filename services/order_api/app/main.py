@@ -10,7 +10,7 @@ import httpx
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from opentelemetry.instrumentation.utils import suppress_instrumentation
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 from psycopg_pool import AsyncConnectionPool
 from starlette.responses import JSONResponse
 
@@ -29,6 +29,7 @@ log = setup_logging(settings.service_name)
 ORDERS_CREATED = Counter("orders_created_total", "Orders successfully created")
 ORDERS_REJECTED = Counter("orders_rejected_total", "Orders rejected", ["reason"])
 ORDERS_REPUBLISHED = Counter("orders_republished_total", "Stale orders re-published to RabbitMQ")
+CHAOS_SLOW = Gauge("order_api_chaos_slow_queries", "1 while the slow_queries chaos mode is active")
 
 
 async def _republish_stale(app: FastAPI) -> None:
@@ -58,7 +59,15 @@ async def lifespan(app: FastAPI):
     await pool.open(wait=True, timeout=60)
     app.state.repo = Repository(pool)
     app.state.publisher = Publisher()
-    await app.state.publisher.start(settings.service_name)
+
+    def on_chaos_mode(mode: str) -> None:
+        slow = mode == "slow_queries"
+        if slow != app.state.repo.slow_queries:
+            app.state.repo.slow_queries = slow
+            CHAOS_SLOW.set(int(slow))
+            log.warning("chaos mode received", extra={"chaos_mode": mode, "slow_queries": slow})
+
+    await app.state.publisher.start(settings.service_name, on_chaos_mode)
     app.state.http = httpx.AsyncClient(timeout=httpx.Timeout(3.0))
     task = asyncio.create_task(_republish_stale(app))
     log.info("order api started", extra={"auth_enabled": settings.auth_enabled})

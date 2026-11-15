@@ -22,10 +22,25 @@ class Publisher:
         self.connection: AbstractRobustConnection | None = None
         self.exchange: AbstractExchange | None = None
 
-    async def start(self, service: str) -> None:
+    async def start(self, service: str, on_chaos_mode=None) -> None:
         self.connection = await mq.connect(service)
         channel = await self.connection.channel(publisher_confirms=True)
         self.exchange, _ = await mq.declare_orders(channel)
+        if on_chaos_mode is not None:
+            # Chaos mode broadcasts from the load generator (fanout `control`)
+            control_channel = await self.connection.channel()
+            control = await mq.declare_control(control_channel)
+            queue = await control_channel.declare_queue(exclusive=True, auto_delete=True)
+            await queue.bind(control)
+
+            async def _on_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+                try:
+                    mode = json.loads(message.body).get("mode", "off")
+                except ValueError:
+                    return
+                on_chaos_mode(mode)
+
+            await queue.consume(_on_message, no_ack=True)
 
     async def close(self) -> None:
         if self.connection:

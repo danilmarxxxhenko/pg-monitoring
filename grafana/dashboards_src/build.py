@@ -5,6 +5,7 @@ Usage: python3 grafana/dashboards_src/build.py
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from lib import LOKI, PROM, TEMPO, Dashboard, loki_target, mapping_up_down, target
@@ -26,8 +27,8 @@ def postgres_dashboard() -> Dashboard:
     d.stat("Розмір БД", f"pg_database_size_bytes{{{DB}}}", unit="bytes", w=3)
     d.gauge("Використання з'єднань",
             "sum(pg_stat_activity_count) / max(pg_settings_max_connections)",
-            thresholds=[("green", None), ("orange", 0.6), ("red", 0.8)], w=3,
-            description="Усі backend-и відносно max_connections")
+            thresholds=[("green", None), ("orange", 0.4), ("red", 0.5)], w=3,
+            description="Усі backend-и відносно max_connections; алерт — понад 50%")
     d.gauge("Cache hit ratio",
             f"sum(rate(pg_stat_database_blks_hit{{{DB}}}[5m])) / "
             f"(sum(rate(pg_stat_database_blks_hit{{{DB}}}[5m])) + sum(rate(pg_stat_database_blks_read{{{DB}}}[5m])))",
@@ -424,12 +425,96 @@ def security_dashboard() -> Dashboard:
     return d
 
 
+ALERTS_OUT = Path(__file__).resolve().parent.parent / "provisioning" / "alerting" / "rules.yml"
+API_ROUTES = 'job="order-api",route!~"/metrics|/health"'
+PAY_Q = 'queue="payments.order-created"'
+
+
+def panel_id(d: Dashboard, title: str) -> str:
+    for p in d.panels:
+        if p.get("title") == title:
+            return str(p["id"])
+    raise KeyError(f"panel {title!r} not found in {d.uid}")
+
+
+def _rule(uid: str, title: str, expr: str, op: str, threshold: float, *, for_: str, severity: str,
+          summary: str, description: str, dash: Dashboard, panel: str, window_s: int = 600) -> dict:
+    return {
+        "uid": uid, "title": title, "condition": "C", "for": for_, "isPaused": False,
+        "noDataState": "OK", "execErrState": "Error",
+        "labels": {"severity": severity, "stack": "pgmon"},
+        "annotations": {"summary": summary, "description": description,
+                        "__dashboardUid__": dash.uid, "__panelId__": panel_id(dash, panel)},
+        "data": [
+            {"refId": "A", "relativeTimeRange": {"from": window_s, "to": 0}, "datasourceUid": "prometheus",
+             "model": {"refId": "A", "expr": expr, "instant": True, "range": False,
+                       "intervalMs": 15000, "maxDataPoints": 43200}},
+            {"refId": "B", "datasourceUid": "__expr__",
+             "model": {"refId": "B", "type": "reduce", "expression": "A", "reducer": "last",
+                       "settings": {"mode": "dropNN"}}},
+            {"refId": "C", "datasourceUid": "__expr__",
+             "model": {"refId": "C", "type": "threshold", "expression": "B",
+                       "conditions": [{"evaluator": {"type": op, "params": [threshold]}}]}},
+        ],
+    }
+
+
+def alert_rules(pg: Dashboard, app: Dashboard, sec: Dashboard) -> dict:
+    rules = [
+        _rule("pg-connections-high", "Забагато з'єднань із БД",
+              "sum(pg_stat_activity_count) / max(pg_settings_max_connections)", "gt", 0.5,
+              for_="1m", severity="warning", dash=pg, panel="З'єднання за станами",
+              summary="Зайнято більше половини max_connections PostgreSQL",
+              description="Використано {{ humanizePercentage $values.B.Value }} з'єднань. Перевірте блокування "
+                          "та сесії idle in transaction на дашборді «СУБД PostgreSQL»."),
+        _rule("pg-deadlocks", "Виявлено deadlock у PostgreSQL",
+              'sum(increase(pg_stat_database_deadlocks{datname="shop"}[2m]))', "gt", 0,
+              for_="0s", severity="warning", dash=pg, panel="Deadlocks",
+              summary="PostgreSQL перервав транзакції через взаємне блокування",
+              description="За 2 хв зафіксовано {{ $values.B.Value }} deadlock(ів)."),
+        _rule("api-p95-latency", "p95 латентності Order API вище порогу",
+              f"histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{{{API_ROUTES}}}[2m])))",
+              "gt", 0.5, for_="1m", severity="critical", dash=app, panel="Латентність p50 / p95 / p99 (з exemplars)",
+              summary="p95 латентності Order API перевищує 500 мс",
+              description="Поточний p95 = {{ humanizeDuration $values.B.Value }}. Відкрийте exemplar на графіку "
+                          "латентності, щоб перейти до повільного трейсу."),
+        _rule("payment-queue-growing", "Черга оплат зростає",
+              f"sum(rabbitmq_queue_messages{{{PAY_Q}}}) and on() (sum(deriv(rabbitmq_queue_messages{{{PAY_Q}}}[2m])) > 0)",
+              "gt", 30, for_="1m", severity="warning", dash=app, panel="Довжина черги оплат",
+              summary="Worker не встигає обробляти order.created",
+              description="У черзі {{ $values.B.Value }} повідомлень і вона продовжує зростати."),
+        _rule("payment-failure-ratio", "Висока частка невдалих оплат",
+              'sum(rate(orders_processed_total{status="failed"}[2m])) / '
+              'sum(rate(orders_processed_total{status=~"paid|failed"}[2m]))',
+              "gt", 0.3, for_="1m", severity="warning", dash=app, panel="Оброблені worker-ом за результатом",
+              summary="Понад 30% оплат відхилено",
+              description="Частка невдалих оплат: {{ humanizePercentage $values.B.Value }}."),
+        _rule("failed-logins-spike", "Сплеск невдалих спроб входу",
+              'sum(rate(auth_login_total{result!="success"}[1m])) * 60', "gt", 20,
+              for_="30s", severity="critical", dash=sec, panel="Спроби входу за результатом",
+              summary="Можливий підбір пароля (brute force)",
+              description="{{ humanize $values.B.Value }} невдалих входів за хвилину. Джерела — на дашборді «Безпека»."),
+        _rule("scrape-target-down", "Ціль моніторингу недоступна",
+              "up", "lt", 1, for_="1m", severity="critical", dash=app, panel="RPS",
+              summary="Prometheus не може зібрати метрики з {{ $labels.job }}",
+              description="Target {{ $labels.instance }} (job {{ $labels.job }}) не відповідає понад 1 хв."),
+    ]
+    return {"apiVersion": 1, "groups": [{"orgId": 1, "name": "pgmon", "folder": "PG Monitoring",
+                                         "interval": "20s", "rules": rules}]}
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    postgres_dashboard().write(OUT, "postgres.json")
-    application_dashboard().write(OUT, "application.json")
-    logs_traces_dashboard().write(OUT, "logs-traces.json")
-    security_dashboard().write(OUT, "security.json")
+    pg, app, logs, sec = postgres_dashboard(), application_dashboard(), logs_traces_dashboard(), security_dashboard()
+    pg.write(OUT, "postgres.json")
+    app.write(OUT, "application.json")
+    logs.write(OUT, "logs-traces.json")
+    sec.write(OUT, "security.json")
+    # JSON is valid YAML; Grafana reads *.yml provisioning files
+    ALERTS_OUT.write_text("# Generated by grafana/dashboards_src/build.py - do not edit by hand\n"
+                          + json.dumps(alert_rules(pg, app, sec), ensure_ascii=False, indent=2) + "\n",
+                          encoding="utf-8")
+    print(f"wrote {ALERTS_OUT}")
 
 
 if __name__ == "__main__":

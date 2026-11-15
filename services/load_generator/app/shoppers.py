@@ -88,8 +88,11 @@ class Shopper:
 
     async def create_order(self) -> None:
         pool = list(self.seen_products) if len(self.seen_products) >= 4 else self.catalog.product_ids
-        items = [{"product_id": pid, "quantity": random.randint(1, 3)}
-                 for pid in random.sample(pool, random.randint(1, min(4, len(pool))))]
+        product_ids = set(random.sample(pool, random.randint(1, min(4, len(pool)))))
+        if chaos.mode == "lock_contention" and random.random() < 0.7:
+            # Hot rows are being locked by the chaos sessions: orders queue up behind them
+            product_ids.add(random.choice(chaos.hot_products))
+        items = [{"product_id": pid, "quantity": random.randint(1, 3)} for pid in product_ids]
         resp = await _call(self.api, "create_order", "POST", "/orders", ok=(201, 409),
                            json={"customer_id": self.customer_id, "items": items})
         if resp is not None and resp.status_code == 201:

@@ -18,7 +18,7 @@ GRANT SELECT, UPDATE ON products TO :"app_user";
 GRANT SELECT, INSERT, UPDATE ON orders, order_items, payments TO :"app_user";
 
 -- Load generator role: catalog maintenance, archiving, chaos scenarios
-CREATE ROLE :"gen_user" LOGIN PASSWORD :'gen_pass' CONNECTION LIMIT 40;
+CREATE ROLE :"gen_user" LOGIN PASSWORD :'gen_pass' CONNECTION LIMIT 60;
 GRANT CONNECT ON DATABASE :"db" TO :"gen_user";
 GRANT USAGE ON SCHEMA public TO :"gen_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"gen_user";

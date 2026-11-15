@@ -41,6 +41,11 @@ class Settings:
     purge_after_min: int = _int("PURGE_AFTER_MIN", 1440)
     purge_batch: int = _int("PURGE_BATCH", 200)
 
+    # Chaos scenarios
+    chaos_hot_products: int = _int("CHAOS_HOT_PRODUCTS", 5)
+    chaos_lock_sessions: int = _int("CHAOS_LOCK_SESSIONS", 30)
+    chaos_bruteforce_rps: float = _float("CHAOS_BRUTEFORCE_RPS", 5)
+
     @property
     def conninfo(self) -> str:
         return (

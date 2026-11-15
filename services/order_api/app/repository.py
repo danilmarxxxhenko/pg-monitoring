@@ -1,6 +1,7 @@
 """SQL access layer of the order API."""
 from __future__ import annotations
 
+import random
 from decimal import Decimal
 
 from psycopg.rows import dict_row
@@ -24,8 +25,8 @@ class OutOfStock(Exception):
 class Repository:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self.pool = pool
-        # Extra SQL injected by chaos scenarios (stage 5); empty in normal mode
-        self.search_delay_s: float = 0.0
+        # Chaos "slow_queries": catalog statements get a pg_sleep() inside PostgreSQL
+        self.slow_queries: bool = False
 
     # ---------------------------------------------------------- catalog
     async def list_products(self, search: str | None, category: str | None, limit: int) -> list[dict]:
@@ -41,10 +42,10 @@ class Repository:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY " + ("name" if search else "price") + " LIMIT %s"
         params.append(limit)
-        if self.search_delay_s:
-            # Chaos "slow_queries": make the statement itself slow inside PostgreSQL
+        if self.slow_queries:
+            # The statement itself becomes slow in PostgreSQL (visible in pg_stat_statements)
             sql = f"SELECT p.* FROM ({sql}) AS p, pg_sleep(%s)"
-            params.append(self.search_delay_s)
+            params.append(round(random.uniform(0.3, 1.2), 2))
         async with db_timer("list_products"), self.pool.connection() as conn:
             cur = conn.cursor(row_factory=dict_row)
             await cur.execute(sql, params)

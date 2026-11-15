@@ -107,9 +107,10 @@ class Consumer:
         except ValueError:
             return
         rate = CHAOS_FAILURE_RATE if mode == "payment_failures" else FAILURE_RATE
-        self.processor.failure_rate = rate
+        if rate != self.processor.failure_rate:
+            self.processor.failure_rate = rate
+            log.warning("chaos mode received", extra={"chaos_mode": mode, "failure_rate": rate})
         FAILURE_RATE_G.set(rate)
-        log.warning("chaos mode received", extra={"chaos_mode": mode, "failure_rate": rate})
 
 
 @asynccontextmanager

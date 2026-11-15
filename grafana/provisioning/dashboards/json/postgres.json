@@ -243,7 +243,7 @@
       },
       "type": "gauge",
       "title": "Використання з'єднань",
-      "description": "Усі backend-и відносно max_connections",
+      "description": "Усі backend-и відносно max_connections; алерт — понад 50%",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -276,11 +276,11 @@
               },
               {
                 "color": "orange",
-                "value": 0.6
+                "value": 0.4
               },
               {
                 "color": "red",
-                "value": 0.8
+                "value": 0.5
               }
             ]
           }

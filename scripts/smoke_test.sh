@@ -48,6 +48,10 @@ role=$(curl -s -b "$JAR" "$BASE/grafana/api/user/orgs" | python3 -c 'import sys,
 if [[ "$role" == Admin ]]; then pass "auth.proxy maps role admin -> Grafana Admin"; else fail "Grafana role for admin: $role"; fi
 code=$(code_of -b "$JAR" "$BASE/prometheus/-/ready")
 if [[ "$code" == 200 ]]; then pass "admin can open /prometheus/"; else fail "admin /prometheus/ -> $code"; fi
+dashboards=$(curl -s -b "$JAR" "$BASE/grafana/api/search?type=dash-db" | python3 -c 'import sys, json; print(len(json.load(sys.stdin)))' 2>/dev/null)
+if [[ "${dashboards:-0}" -ge 4 ]]; then pass "Grafana has $dashboards provisioned dashboards"; else fail "Grafana dashboards: ${dashboards:-0}"; fi
+rules=$(curl -s -b "$JAR" "$BASE/grafana/api/v1/provisioning/alert-rules" | python3 -c 'import sys, json; print(len(json.load(sys.stdin)))' 2>/dev/null)
+if [[ "${rules:-0}" -ge 5 ]]; then pass "Grafana has $rules provisioned alert rules"; else fail "Grafana alert rules: ${rules:-0}"; fi
 : > "$JAR"
 curl -s -o /dev/null -c "$JAR" -X POST --data-urlencode "username=$AUTH_VIEWER_USER" \
   --data-urlencode "password=$AUTH_VIEWER_PASSWORD" -d next=/ "$BASE/login"
@@ -95,6 +99,9 @@ d = json.load(sys.stdin)
 names = {a["value"]["stringValue"] for b in d["batches"] for a in b["resource"]["attributes"] if a["key"] == "service.name"}
 print(",".join(sorted(names)))')
   pass "trace $trace passes through worker (services: $services)"
+  exemplars=$(prom_get "/api/v1/query_exemplars?query=http_request_duration_seconds_bucket&start=$((now - 600))&end=$now" \
+    | python3 -c 'import sys, json; print(sum(len(s["exemplars"]) for s in json.load(sys.stdin)["data"]))')
+  if [[ "$exemplars" -gt 0 ]]; then pass "Prometheus stores $exemplars exemplars with trace_id"; else fail "no exemplars in Prometheus"; fi
   if [[ "$services" == *load-generator* && "$services" == *order-api* ]]; then
     pass "trace is end-to-end: load-generator -> order-api -> worker"
   else
