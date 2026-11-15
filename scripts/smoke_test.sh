@@ -81,7 +81,7 @@ curl_net() { docker run --rm --network "${COMPOSE_PROJECT_NAME:-pgmon}_default" 
 # at every service that has sent logs during the last 24 hours.
 now=$(date +%s)
 counts=$(curl_net --data-urlencode "start=$((now - 86400))000000000" --data-urlencode "end=${now}000000000" \
-  --data-urlencode 'query={project="pgmon"}' http://loki:3100/loki/api/v1/label/service/values | python3 -c '
+  --data-urlencode 'query={service=~".+"}' http://loki:3100/loki/api/v1/label/service/values | python3 -c '
 import sys, json
 print(" ".join(json.load(sys.stdin)["data"]))')
 missing=""

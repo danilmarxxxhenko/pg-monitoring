@@ -182,7 +182,7 @@ class Dashboard:
             "query": {"label": loki_label, "stream": stream, "type": 1,
                       "refId": "LokiVariableQueryEditor-VariableQuery"},
             "definition": f"label_values({stream}, {loki_label})",
-            "refresh": 2, "sort": 1, "multi": True, "includeAll": True, "allValue": ".*",
+            "refresh": 2, "sort": 1, "multi": True, "includeAll": True, "allValue": ".+",
             "current": {"text": ["All"], "value": ["$__all"]}, "hide": 0,
         })
 

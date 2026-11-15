@@ -282,7 +282,7 @@ def application_dashboard() -> Dashboard:
     return d
 
 
-LOGS = '{project="pgmon", service=~"$service"}'
+LOGS = '{service=~"$service"}'
 
 
 def tempo_traceql(query: str, ref: str = "A", limit: int = 20) -> dict:
@@ -294,8 +294,8 @@ def logs_traces_dashboard() -> Dashboard:
     d = Dashboard("logs-traces", "Логи і трейси", ["pgmon", "logs", "traces"],
                   description="Loki (логи всіх контейнерів) і Tempo (розподілені трейси) з переходами між ними",
                   time_from="now-15m")
-    d.loki_label_var("service", "Сервіс", "service", '{project="pgmon"}')
-    d.loki_label_var("level", "Рівень", "level", '{project="pgmon"}')
+    d.loki_label_var("service", "Сервіс", "service", '{service=~".+"}')
+    d.loki_label_var("level", "Рівень", "level", '{service=~".+"}')
     d.textbox_var("search", "Пошук (текст / trace_id)")
     d.textbox_var("trace_id", "Trace ID")
     d.link("Інші дашборди", ["pgmon"])
@@ -310,11 +310,11 @@ def logs_traces_dashboard() -> Dashboard:
         loki_target(f'sum by (service) (count_over_time({LOGS} [1m]))', legend="{{service}}"),
     ], ds=LOKI, stack=True, draw="bars", fill=80, w=12, description="Рядків логу за хвилину")
     d.timeseries("Помилки та попередження", [
-        loki_target('sum by (service, level) (count_over_time({project="pgmon", service=~"$service", '
+        loki_target('sum by (service, level) (count_over_time({service=~"$service", '
                     'level=~"error|critical|warning"} [1m]))', legend="{{service}} {{level}}"),
     ], ds=LOKI, stack=True, draw="bars", fill=80, w=12)
-    d.logs("Логи", f'{{project="pgmon", service=~"$service", level=~"$level"}} |~ "(?i)$search"', h=14)
-    d.logs("Останні помилки", '{project="pgmon", service=~"$service", level=~"error|critical"}', h=8)
+    d.logs("Логи", f'{{service=~"$service", level=~"$level"}} |~ "(?i)$search"', h=14)
+    d.logs("Останні помилки", '{service=~"$service", level=~"error|critical"}', h=8)
 
     d.row("Трейси (Tempo)")
     d.custom({"type": "nodeGraph", "title": "Карта сервісів (service graph)", "datasource": TEMPO,

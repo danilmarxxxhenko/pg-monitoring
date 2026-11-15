@@ -29,16 +29,16 @@
         },
         "query": {
           "label": "service",
-          "stream": "{project=\"pgmon\"}",
+          "stream": "{service=~\".+\"}",
           "type": 1,
           "refId": "LokiVariableQueryEditor-VariableQuery"
         },
-        "definition": "label_values({project=\"pgmon\"}, service)",
+        "definition": "label_values({service=~\".+\"}, service)",
         "refresh": 2,
         "sort": 1,
         "multi": true,
         "includeAll": true,
-        "allValue": ".*",
+        "allValue": ".+",
         "current": {
           "text": [
             "All"
@@ -59,16 +59,16 @@
         },
         "query": {
           "label": "level",
-          "stream": "{project=\"pgmon\"}",
+          "stream": "{service=~\".+\"}",
           "type": 1,
           "refId": "LokiVariableQueryEditor-VariableQuery"
         },
-        "definition": "label_values({project=\"pgmon\"}, level)",
+        "definition": "label_values({service=~\".+\"}, level)",
         "refresh": 2,
         "sort": 1,
         "multi": true,
         "includeAll": true,
-        "allValue": ".*",
+        "allValue": ".+",
         "current": {
           "text": [
             "All"
@@ -184,7 +184,7 @@
             "uid": "loki"
           },
           "refId": "A",
-          "expr": "sum by (service) (count_over_time({project=\"pgmon\", service=~\"$service\"} [1m]))",
+          "expr": "sum by (service) (count_over_time({service=~\"$service\"} [1m]))",
           "queryType": "range",
           "legendFormat": "{{service}}"
         }
@@ -251,7 +251,7 @@
             "uid": "loki"
           },
           "refId": "A",
-          "expr": "sum by (service, level) (count_over_time({project=\"pgmon\", service=~\"$service\", level=~\"error|critical|warning\"} [1m]))",
+          "expr": "sum by (service, level) (count_over_time({service=~\"$service\", level=~\"error|critical|warning\"} [1m]))",
           "queryType": "range",
           "legendFormat": "{{service}} {{level}}"
         }
@@ -318,7 +318,7 @@
             "uid": "loki"
           },
           "refId": "A",
-          "expr": "{project=\"pgmon\", service=~\"$service\", level=~\"$level\"} |~ \"(?i)$search\"",
+          "expr": "{service=~\"$service\", level=~\"$level\"} |~ \"(?i)$search\"",
           "queryType": "range",
           "legendFormat": ""
         }
@@ -354,7 +354,7 @@
             "uid": "loki"
           },
           "refId": "A",
-          "expr": "{project=\"pgmon\", service=~\"$service\", level=~\"error|critical\"}",
+          "expr": "{service=~\"$service\", level=~\"error|critical\"}",
           "queryType": "range",
           "legendFormat": ""
         }
