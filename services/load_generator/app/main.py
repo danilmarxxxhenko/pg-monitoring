@@ -5,20 +5,21 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi import FastAPI, HTTPException, Request
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
-from starlette.responses import Response
 
 from common.logging import setup_logging
+from common.metrics import metrics_response
 
+from .catalog import Catalog
 from .chaos import MODES, chaos
 from .config import settings
 from .jobs import start_jobs
 from .metrics import ACTIVE_USERS, TARGET_RPS
-from .shoppers_db import Catalog, shopper
+from .shoppers import ApiSession, Shopper
 
 log = setup_logging(settings.service_name)
 
@@ -30,18 +31,25 @@ async def lifespan(app: FastAPI):
     catalog = Catalog()
     await catalog.load(pool)
 
+    client = httpx.AsyncClient(timeout=httpx.Timeout(10.0),
+                               limits=httpx.Limits(max_connections=100, max_keepalive_connections=50))
+    api = ApiSession(client)
+    await api.login()
+
     tasks = start_jobs(pool)
-    tasks += [asyncio.create_task(shopper(i, pool, catalog), name=f"shopper-{i}")
+    tasks += [asyncio.create_task(Shopper(i, api, catalog).run(), name=f"shopper-{i}")
               for i in range(settings.users)]
     ACTIVE_USERS.set(settings.users)
     TARGET_RPS.set(settings.rps)
-    log.info("load generator started", extra={"users": settings.users, "rps": settings.rps})
+    log.info("load generator started", extra={"users": settings.users, "rps": settings.rps,
+                                              "api_url": settings.api_url})
     try:
         yield
     finally:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await client.aclose()
         await pool.close()
 
 
@@ -58,8 +66,8 @@ async def health() -> dict:
 
 
 @app.get("/metrics")
-async def metrics() -> Response:
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+async def metrics(request: Request):
+    return metrics_response(request)
 
 
 @app.get("/chaos")

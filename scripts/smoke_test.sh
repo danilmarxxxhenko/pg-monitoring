@@ -30,6 +30,14 @@ stmts=$(prom_get '/api/v1/query?query=count(pg_stat_statements_calls_total)' | p
 import sys, json; r = json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else 0)')
 if [[ "${stmts%.*}" -gt 0 ]]; then pass "pg_stat_statements metrics collected ($stmts statements)"; else fail "no pg_stat_statements metrics"; fi
 
+echo "== Order API and RabbitMQ"
+http_code() { docker run --rm --network "${COMPOSE_PROJECT_NAME:-pgmon}_default" curlimages/curl:8.23.0 -s -o /dev/null -w '%{http_code}' "$@"; }
+code=$(http_code "http://order-api:8000/products?limit=1")
+if [[ "$code" == 200 ]]; then pass "order-api GET /products -> 200"; else fail "order-api GET /products -> $code"; fi
+consumers=$(prom_get '/api/v1/query?query=sum(rabbitmq_queue_consumers%7Bqueue%3D%22payments.order-created%22%7D)' | python3 -c '
+import sys, json; r = json.load(sys.stdin)["data"]["result"]; print(int(float(r[0]["value"][1])) if r else 0)')
+if [[ "$consumers" -gt 0 ]]; then pass "payments queue has $consumers consumer(s)"; else fail "payments queue has no consumers"; fi
+
 echo "== Orders"
 last_id=$(psql_q "SELECT coalesce(max(id), 0) FROM orders")
 sleep 20

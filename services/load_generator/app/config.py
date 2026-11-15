@@ -18,6 +18,10 @@ class Settings:
     service_name: str = os.getenv("SERVICE_NAME", "load-generator")
     http_port: int = _int("HTTP_PORT", 8080)
 
+    # Order API base URL and the auth endpoint for the service account
+    api_url: str = os.getenv("API_URL", "http://order-api:8000").rstrip("/")
+    token_url: str = os.getenv("TOKEN_URL", "http://auth:8000/api/token")
+
     users: int = _int("USERS", 20)
     rps: float = _float("RPS", 10)
 

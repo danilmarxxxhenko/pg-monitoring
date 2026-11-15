@@ -21,3 +21,21 @@ scrape_configs:
       - targets: ["load-generator:8080"]
         labels:
           service: load-generator
+
+  - job_name: order-api
+    static_configs:
+      - targets: ["order-api:8000"]
+        labels:
+          service: order-api
+
+  - job_name: worker
+    static_configs:
+      - targets: ["worker:8000"]
+        labels:
+          service: worker
+
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+        labels:
+          service: rabbitmq

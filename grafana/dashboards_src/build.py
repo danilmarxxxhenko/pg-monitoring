@@ -162,9 +162,131 @@ def postgres_dashboard() -> Dashboard:
     return d
 
 
+API = 'job="order-api",route!~"/metrics|/health"'
+Q = 'queue="payments.order-created"'
+DLQ = 'queue="payments.order-created.dlq"'
+
+
+def _quantile(q: float, by: str = "") -> str:
+    group = f"le{', ' + by if by else ''}"
+    return f"histogram_quantile({q}, sum by ({group}) (rate(http_request_duration_seconds_bucket{{{API}}}[1m])))"
+
+
+def application_dashboard() -> Dashboard:
+    d = Dashboard("app-overview", "Застосунок", ["pgmon", "application"],
+                  description="Order API, worker оплат і черга RabbitMQ")
+    d.link("Інші дашборди", ["pgmon"])
+
+    d.row("Огляд")
+    d.stat("RPS", f"sum(rate(http_request_duration_seconds_count{{{API}}}[1m]))", unit="reqps", decimals=1, w=4)
+    d.stat("p95 latency", _quantile(0.95), unit="s", decimals=3, w=4,
+           thresholds=[("green", None), ("orange", 0.3), ("red", 0.5)])
+    d.stat("Частка помилок 5xx",
+           f'sum(rate(http_request_duration_seconds_count{{{API},status=~"5.."}}[5m])) / '
+           f"sum(rate(http_request_duration_seconds_count{{{API}}}[5m])) or vector(0)",
+           unit="percentunit", decimals=2, w=4, thresholds=[("green", None), ("orange", 0.01), ("red", 0.05)])
+    d.stat("Замовлень за хвилину", "sum(rate(orders_created_total[5m])) * 60", decimals=1, w=4)
+    d.stat("Успішних оплат",
+           'sum(rate(orders_processed_total{status="paid"}[5m])) / '
+           'sum(rate(orders_processed_total{status=~"paid|failed"}[5m]))',
+           unit="percentunit", decimals=1, w=4, thresholds=[("red", None), ("orange", 0.8), ("green", 0.88)])
+    d.stat("Черга оплат", f"sum(rabbitmq_queue_messages{{{Q}}})", decimals=0, w=4,
+           thresholds=[("green", None), ("orange", 20), ("red", 100)],
+           description="Повідомлення order.created, що очікують або обробляються (ready + unacked)")
+
+    d.row("HTTP: Order API")
+    d.timeseries("Запити за секунду за маршрутами", [
+        target(f"sum by (method, route) (rate(http_request_duration_seconds_count{{{API}}}[1m]))",
+               "{{method}} {{route}}"),
+    ], unit="reqps", stack=True)
+    d.timeseries("Латентність p50 / p95 / p99 (з exemplars)", [
+        target(_quantile(0.50), "p50", "A"),
+        target(_quantile(0.95), "p95", "B", exemplar=True),
+        target(_quantile(0.99), "p99", "C"),
+    ], unit="s", description="Ромбики-exemplars ведуть до трейсу конкретного запиту в Tempo")
+    d.timeseries("p95 за маршрутами", [
+        target(_quantile(0.95, "method, route"), "{{method}} {{route}}"),
+    ], unit="s", w=8)
+    d.timeseries("Коди відповідей", [
+        target(f"sum by (status) (rate(http_request_duration_seconds_count{{{API}}}[1m]))", "{{status}}"),
+    ], unit="reqps", stack=True, w=8, overrides=[
+        {"matcher": {"id": "byRegexp", "options": "5.."},
+         "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+        {"matcher": {"id": "byRegexp", "options": "4.."},
+         "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]},
+        {"matcher": {"id": "byRegexp", "options": "2.."},
+         "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]}])
+    d.timeseries("Частка помилок (4xx / 5xx)", [
+        target(f'sum(rate(http_request_duration_seconds_count{{{API},status=~"4.."}}[1m])) / '
+               f"sum(rate(http_request_duration_seconds_count{{{API}}}[1m]))", "4xx"),
+        target(f'sum(rate(http_request_duration_seconds_count{{{API},status=~"5.."}}[1m])) / '
+               f"sum(rate(http_request_duration_seconds_count{{{API}}}[1m])) or vector(0)", "5xx", "B"),
+    ], unit="percentunit", w=8)
+
+    d.row("Замовлення та оплати")
+    d.timeseries("Замовлення: створені / відхилені", [
+        target("sum(rate(orders_created_total[1m])) * 60", "створено"),
+        target("sum by (reason) (rate(orders_rejected_total[1m])) * 60", "відхилено: {{reason}}", "B"),
+        target("sum(rate(orders_republished_total[1m])) * 60", "повторно опубліковано", "C"),
+    ], unit="short", description="Кількість за хвилину")
+    d.timeseries("Оброблені worker-ом за результатом", [
+        target("sum by (status) (rate(orders_processed_total[1m])) * 60", "{{status}}"),
+    ], stack=True, description="Кількість за хвилину", overrides=[
+        {"matcher": {"id": "byName", "options": "failed"},
+         "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}]},
+        {"matcher": {"id": "byName", "options": "paid"},
+         "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]}])
+    d.timeseries("Час обробки оплати (p50 / p95)", [
+        target("histogram_quantile(0.5, sum by (le) (rate(payment_processing_duration_seconds_bucket[5m])))", "p50"),
+        target("histogram_quantile(0.95, sum by (le) (rate(payment_processing_duration_seconds_bucket[5m])))",
+               "p95", "B", exemplar=True),
+    ], unit="s", w=8)
+    d.timeseries("Тривалість операцій з БД (p95)", [
+        target('histogram_quantile(0.95, sum by (le, job, operation) (rate(db_query_duration_seconds_bucket{job=~"order-api|worker"}[1m])))',
+               "{{job}}: {{operation}}"),
+    ], unit="s", w=8, description="db_query_duration_seconds{operation}")
+    d.timeseries("Повідомлення в обробці (worker)", [
+        target("sum(worker_messages_in_flight)", "in flight"),
+        target("max(worker_payment_failure_rate)", "ймовірність відмови", "B"),
+    ], w=8, overrides=[{"matcher": {"id": "byName", "options": "ймовірність відмови"},
+                        "properties": [{"id": "custom.axisPlacement", "value": "right"},
+                                       {"id": "unit", "value": "percentunit"}]}])
+
+    d.row("RabbitMQ")
+    d.timeseries("Довжина черги оплат", [
+        target(f"sum(rabbitmq_queue_messages_ready{{{Q}}})", "ready"),
+        target(f"sum(rabbitmq_queue_messages_unacked{{{Q}}})", "unacked", "B"),
+    ], stack=True, w=8)
+    d.timeseries("Dead-letter queue", [
+        target(f"sum(rabbitmq_queue_messages{{{DLQ}}})", "у DLQ"),
+    ], w=8, thresholds=[("transparent", None), ("red", 1)])
+    d.timeseries("Потік повідомлень", [
+        target('sum(rate(rabbitmq_global_messages_received_total{protocol="amqp091"}[1m]))', "отримано брокером"),
+        target('sum(rate(rabbitmq_global_messages_acknowledged_total{protocol="amqp091"}[1m]))', "підтверджено (ack)", "B"),
+        target(f"sum(rabbitmq_queue_consumers{{{Q}}})", "consumers", "C"),
+    ], unit="short", w=8, overrides=[{"matcher": {"id": "byName", "options": "consumers"},
+                                      "properties": [{"id": "custom.axisPlacement", "value": "right"},
+                                                     {"id": "custom.drawStyle", "value": "line"}]}])
+
+    d.row("Генератор навантаження")
+    d.timeseries("Операції покупців за результатом", [
+        target('sum by (result) (rate(loadgen_operations_total{operation!~"job_.*"}[1m]))', "{{result}}"),
+    ], unit="ops", stack=True, w=8)
+    d.timeseries("Латентність на боці клієнта (p95)", [
+        target("histogram_quantile(0.95, sum by (le, operation) (rate(loadgen_request_duration_seconds_bucket[1m])))",
+               "{{operation}}"),
+    ], unit="s", w=8)
+    d.timeseries("Цільовий RPS і режим хаосу", [
+        target("max(loadgen_target_rps)", "target RPS"),
+        target("max by (mode) (loadgen_chaos_mode{mode!=\"off\"}) > 0", "хаос: {{mode}}", "B"),
+    ], w=8)
+    return d
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     postgres_dashboard().write(OUT, "postgres.json")
+    application_dashboard().write(OUT, "application.json")
 
 
 if __name__ == "__main__":

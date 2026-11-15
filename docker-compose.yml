@@ -72,7 +72,80 @@ services:
       retries: 5
     mem_limit: 96m
 
-  # --------------------------------------------------------------- workloads
+  # --------------------------------------------------------------- messaging
+  rabbitmq:
+    image: rabbitmq:4.3.7-management
+    restart: unless-stopped
+    logging: *default-logging
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-pgmon.conf:ro
+      - ./rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - rabbitmq-data:/var/lib/rabbitmq
+    # Management UI for debugging only, bound to localhost (login from .env)
+    ports:
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_local_alarms"]
+      interval: 15s
+      timeout: 15s
+      retries: 10
+      start_period: 30s
+    mem_limit: 400m
+
+  # ------------------------------------------------------------ applications
+  order-api:
+    <<: *python-service
+    build:
+      context: ./services
+      dockerfile: order_api/Dockerfile
+    image: pgmon/order-api:1.0.0
+    environment:
+      <<: *python-env
+      SERVICE_NAME: order-api
+      DB_HOST: postgres
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${APP_DB_USER}
+      DB_PASSWORD: ${APP_DB_PASSWORD}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      # Switched on at stage 4 together with the auth service
+      AUTH_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    mem_limit: 192m
+
+  worker:
+    <<: *python-service
+    build:
+      context: ./services
+      dockerfile: worker/Dockerfile
+    image: pgmon/worker:1.0.0
+    environment:
+      <<: *python-env
+      SERVICE_NAME: worker
+      DB_HOST: postgres
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${APP_DB_USER}
+      DB_PASSWORD: ${APP_DB_PASSWORD}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      WORKER_PREFETCH: "10"
+      PAYMENT_FAILURE_RATE: "0.1"
+      CHAOS_PAYMENT_FAILURE_RATE: "0.7"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    mem_limit: 160m
+
   load-generator:
     <<: *python-service
     build:
@@ -84,12 +157,19 @@ services:
       SERVICE_NAME: load-generator
       USERS: ${USERS}
       RPS: ${RPS}
+      API_URL: http://order-api:8000
       DB_HOST: postgres
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${GENERATOR_DB_USER}
       DB_PASSWORD: ${GENERATOR_DB_PASSWORD}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
     depends_on:
       postgres:
+        condition: service_healthy
+      order-api:
+        condition: service_healthy
+      worker:
         condition: service_healthy
     mem_limit: 192m
 
@@ -139,9 +219,10 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-    mem_limit: 448m
+    mem_limit: 512m
 
 volumes:
   pgdata:
   prometheus-data:
   grafana-data:
+  rabbitmq-data:

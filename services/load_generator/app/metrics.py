@@ -6,16 +6,18 @@ from contextlib import asynccontextmanager
 
 from prometheus_client import Counter, Gauge, Histogram
 
+from common.metrics import DB_QUERY_DURATION, LATENCY_BUCKETS, trace_exemplar
+
 OPERATIONS = Counter(
     "loadgen_operations_total",
     "Operations executed by virtual shoppers and background jobs",
     ["operation", "result"],
 )
-DB_QUERY_DURATION = Histogram(
-    "db_query_duration_seconds",
-    "Duration of database operations issued by the service",
+REQUEST_DURATION = Histogram(
+    "loadgen_request_duration_seconds",
+    "Client-side latency of API calls made by virtual shoppers",
     ["operation"],
-    buckets=(0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+    buckets=LATENCY_BUCKETS,
 )
 ACTIVE_USERS = Gauge("loadgen_active_users", "Virtual shoppers currently running")
 TARGET_RPS = Gauge("loadgen_target_rps", "Current target request rate")
@@ -32,7 +34,7 @@ class Outcome:
 
 
 @asynccontextmanager
-async def timed(operation: str):
+async def timed(operation: str, histogram: Histogram = DB_QUERY_DURATION):
     """Measure an operation and count its outcome."""
     outcome = Outcome()
     start = time.perf_counter()
@@ -42,5 +44,5 @@ async def timed(operation: str):
         outcome.result = "error"
         raise
     finally:
-        DB_QUERY_DURATION.labels(operation).observe(time.perf_counter() - start)
+        histogram.labels(operation).observe(time.perf_counter() - start, exemplar=trace_exemplar())
         OPERATIONS.labels(operation, outcome.result).inc()
