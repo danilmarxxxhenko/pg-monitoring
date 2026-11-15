@@ -9,12 +9,14 @@ import asyncio
 import logging
 import random
 
+from opentelemetry import trace
 from psycopg_pool import AsyncConnectionPool
 
 from .config import settings
 from .metrics import timed
 
 log = logging.getLogger(__name__)
+_tracer = trace.get_tracer("load-generator.jobs")
 
 
 async def restock(pool: AsyncConnectionPool) -> None:
@@ -63,7 +65,8 @@ async def _every(period: float, job, pool: AsyncConnectionPool) -> None:
     await asyncio.sleep(random.uniform(1, period))  # spread the first runs
     while True:
         try:
-            await job(pool)
+            with _tracer.start_as_current_span(f"job.{job.__name__}"):
+                await job(pool)
         except asyncio.CancelledError:
             raise
         except Exception:

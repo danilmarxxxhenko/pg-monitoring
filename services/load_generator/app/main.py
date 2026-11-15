@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from common.logging import setup_logging
 from common.metrics import metrics_response
+from common.telemetry import setup_tracing
 
 from .catalog import Catalog
 from .chaos import MODES, chaos
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="load-generator", lifespan=lifespan)
+setup_tracing(settings.service_name, fastapi_app=app, httpx_client=True, psycopg=True, aio_pika=True)
 
 
 class ChaosRequest(BaseModel):

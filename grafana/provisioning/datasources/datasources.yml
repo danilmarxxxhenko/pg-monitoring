@@ -2,6 +2,11 @@ apiVersion: 1
 
 prune: true
 
+# Correlations between the three signals:
+#   metrics -> traces : Prometheus exemplars carry trace_id -> Tempo
+#   logs    -> traces : Loki derived field extracts trace_id -> Tempo
+#   traces  -> logs   : Tempo "traces to logs" opens Loki filtered by trace_id
+#   traces  -> metrics: Tempo service graph / span metrics from Prometheus
 datasources:
   - name: Prometheus
     uid: prometheus
@@ -13,3 +18,68 @@ datasources:
     jsonData:
       httpMethod: POST
       timeInterval: 15s
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+          urlDisplayLabel: Відкрити трейс
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        # JSON log lines: "trace_id": "<32 hex>"
+        - name: trace_id
+          matcherType: regex
+          matcherRegex: '"trace_id":\s*"([0-9a-f]{32})"'
+          datasourceUid: tempo
+          url: "$${__value.raw}"
+          urlDisplayLabel: Відкрити трейс у Tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-2m"
+        spanEndTimeShift: "2m"
+        filterByTraceID: true
+        filterBySpanID: false
+        customQuery: true
+        # Tempo may strip leading zeros of trace ids; logs keep all 32 hex chars
+        query: '{service="$${__span.tags["service.name"]}"} | trace_id=~"0*$${__trace.traceId}"'
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: "-5m"
+        spanEndTimeShift: "5m"
+        tags:
+          - key: service.name
+            value: service
+        queries:
+          - name: Частота запитів сервісу
+            query: 'sum(rate(traces_spanmetrics_calls_total{$$__tags}[1m]))'
+          - name: p95 латентність сервісу
+            query: 'histogram_quantile(0.95, sum by (le) (rate(traces_spanmetrics_latency_bucket{$$__tags}[1m])))'
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      lokiSearch:
+        datasourceUid: loki
+      traceQuery:
+        timeShiftEnabled: true
+        spanStartTimeShift: "-30m"
+        spanEndTimeShift: "30m"
+      streamingEnabled:
+        search: true
+        metrics: true

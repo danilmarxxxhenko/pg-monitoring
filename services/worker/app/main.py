@@ -23,6 +23,7 @@ from starlette.responses import JSONResponse
 from common import mq
 from common.logging import setup_logging
 from common.metrics import metrics_response, trace_exemplar
+from common.telemetry import setup_tracing
 
 from .payments import PaymentProcessor
 
@@ -128,6 +129,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="worker", lifespan=lifespan)
+setup_tracing(SERVICE, fastapi_app=app, psycopg=True, aio_pika=True)
 
 
 @app.get("/health")

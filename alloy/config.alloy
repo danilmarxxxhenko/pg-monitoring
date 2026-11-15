@@ -1,0 +1,127 @@
+// Grafana Alloy: the telemetry pipeline of the stack.
+//   * container logs (Docker API)  -> parsing -> Loki
+//   * OTLP traces from services     -> batching -> Tempo
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+// ------------------------------------------------------------------ logs
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "10s"
+
+  // Only containers of this compose project
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=" + sys.env("COMPOSE_PROJECT")]
+  }
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    target_label = "project"
+    replacement  = sys.env("COMPOSE_PROJECT")
+  }
+}
+
+loki.source.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.containers.output
+  relabel_rules    = discovery.relabel.containers.rules
+  refresh_interval = "10s"
+  forward_to       = [loki.process.containers.receiver]
+}
+
+loki.process "containers" {
+  // JSON logs of our Python services (and Grafana): {"level": "info", ...}
+  stage.regex {
+    expression = "\"level\":\\s*\"(?P<level>[a-zA-Z]+)\""
+  }
+  // logfmt logs of Loki / Tempo / Alloy / Prometheus: level=info
+  stage.regex {
+    expression = "(?:^|\\s)level=\"?(?P<level>[a-zA-Z]+)"
+  }
+  // PostgreSQL: "... LOG:  ...", "... ERROR:  ..."
+  stage.match {
+    selector = "{service=\"postgres\"}"
+    stage.regex {
+      expression = "\\s(?P<level>LOG|ERROR|FATAL|PANIC|WARNING|NOTICE|DETAIL|STATEMENT|HINT):\\s"
+    }
+  }
+  // RabbitMQ: "2026-... [info] <0.1.0> ..."
+  stage.match {
+    selector = "{service=\"rabbitmq\"}"
+    stage.regex {
+      expression = "\\[(?P<level>debug|info|notice|warning|error|critical)\\]"
+    }
+  }
+  // Normalise to lowercase and short forms
+  stage.template {
+    source   = "level"
+    template = "{{ $l := ToLower .Value }}{{ if eq $l \"warn\" }}warning{{ else if eq $l \"log\" }}info{{ else if eq $l \"statement\" }}info{{ else if eq $l \"detail\" }}info{{ else if eq $l \"hint\" }}info{{ else if eq $l \"fatal\" }}critical{{ else if eq $l \"panic\" }}critical{{ else if eq $l \"\" }}unknown{{ else }}{{ $l }}{{ end }}"
+  }
+  stage.labels {
+    values = { level = "" }
+  }
+
+  // trace_id / span_id become structured metadata (not labels: unbounded cardinality)
+  stage.regex {
+    expression = "\"trace_id\":\\s*\"(?P<trace_id>[0-9a-f]{32})\""
+  }
+  stage.regex {
+    expression = "\"span_id\":\\s*\"(?P<span_id>[0-9a-f]{16})\""
+  }
+  stage.structured_metadata {
+    values = { trace_id = "", span_id = "" }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// ---------------------------------------------------------------- traces
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  timeout = "2s"
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls {
+      insecure = true
+    }
+  }
+}

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib import Dashboard, mapping_up_down, target
+from lib import LOKI, TEMPO, Dashboard, loki_target, mapping_up_down, target
 
 OUT = Path(__file__).resolve().parent.parent / "provisioning" / "dashboards" / "json"
 DB = 'datname="$db"'
@@ -217,10 +217,10 @@ def application_dashboard() -> Dashboard:
         {"matcher": {"id": "byRegexp", "options": "2.."},
          "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}]}])
     d.timeseries("Частка помилок (4xx / 5xx)", [
-        target(f'sum(rate(http_request_duration_seconds_count{{{API},status=~"4.."}}[1m])) / '
+        target(f'(sum(rate(http_request_duration_seconds_count{{{API},status=~"4.."}}[1m])) or vector(0)) / '
                f"sum(rate(http_request_duration_seconds_count{{{API}}}[1m]))", "4xx"),
-        target(f'sum(rate(http_request_duration_seconds_count{{{API},status=~"5.."}}[1m])) / '
-               f"sum(rate(http_request_duration_seconds_count{{{API}}}[1m])) or vector(0)", "5xx", "B"),
+        target(f'(sum(rate(http_request_duration_seconds_count{{{API},status=~"5.."}}[1m])) or vector(0)) / '
+               f"sum(rate(http_request_duration_seconds_count{{{API}}}[1m]))", "5xx", "B"),
     ], unit="percentunit", w=8)
 
     d.row("Замовлення та оплати")
@@ -283,10 +283,82 @@ def application_dashboard() -> Dashboard:
     return d
 
 
+LOGS = '{project="pgmon", service=~"$service"}'
+
+
+def tempo_traceql(query: str, ref: str = "A", limit: int = 20) -> dict:
+    return {"datasource": TEMPO, "refId": ref, "queryType": "traceql", "query": query,
+            "limit": limit, "tableType": "traces"}
+
+
+def logs_traces_dashboard() -> Dashboard:
+    d = Dashboard("logs-traces", "Логи і трейси", ["pgmon", "logs", "traces"],
+                  description="Loki (логи всіх контейнерів) і Tempo (розподілені трейси) з переходами між ними",
+                  time_from="now-15m")
+    d.loki_label_var("service", "Сервіс", "service", '{project="pgmon"}')
+    d.loki_label_var("level", "Рівень", "level", '{project="pgmon"}')
+    d.textbox_var("search", "Пошук (текст / trace_id)")
+    d.link("Інші дашборди", ["pgmon"])
+
+    d.text("**Як користуватися.** У рядку логу натисніть **trace_id → Відкрити трейс у Tempo**. "
+           "У трейсі кнопка **Logs for this span** відкриває логи цього трейсу. "
+           "На дашборді «Застосунок» ромбики-exemplars на графіку латентності ведуть до конкретного трейсу.",
+           h=2)
+
+    d.row("Логи (Loki)")
+    d.timeseries("Обсяг логів за сервісами", [
+        loki_target(f'sum by (service) (count_over_time({LOGS} [1m]))', legend="{{service}}"),
+    ], ds=LOKI, stack=True, draw="bars", fill=80, w=12, description="Рядків логу за хвилину")
+    d.timeseries("Помилки та попередження", [
+        loki_target('sum by (service, level) (count_over_time({project="pgmon", service=~"$service", '
+                    'level=~"error|critical|warning"} [1m]))', legend="{{service}} {{level}}"),
+    ], ds=LOKI, stack=True, draw="bars", fill=80, w=12)
+    d.logs("Логи", f'{{project="pgmon", service=~"$service", level=~"$level"}} |~ "(?i)$search"', h=14)
+    d.logs("Останні помилки", '{project="pgmon", service=~"$service", level=~"error|critical"}', h=8)
+
+    d.row("Трейси (Tempo)")
+    d.custom({"type": "nodeGraph", "title": "Карта сервісів (service graph)", "datasource": TEMPO,
+              "description": "Будується metrics generator-ом Tempo з трейсів (метрики traces_service_graph_* у Prometheus)",
+              "targets": [{"datasource": TEMPO, "refId": "A", "queryType": "serviceMap"}],
+              "options": {}}, w=12, h=12)
+    d.timeseries("Запити між сервісами (з трейсів)", [
+        target("sum by (client, server) (rate(traces_service_graph_request_total[1m]))", "{{client}} → {{server}}"),
+    ], unit="reqps", w=12, h=12)
+    trace_overrides = [{"matcher": {"id": "byName", "options": "Trace ID"},
+                        "properties": [{"id": "custom.width", "value": 280}]}]
+    d.table("Трейси, що пройшли через worker (оплата)",
+            [tempo_traceql('{ resource.service.name = "worker" && name = "payment.gateway" }')],
+            ds=TEMPO, w=12, h=9, overrides=trace_overrides)
+    d.table("Трейси з помилками",
+            [tempo_traceql("{ status = error }")], ds=TEMPO, w=12, h=9, overrides=trace_overrides)
+    d.table("Повільні запити Order API (> 250 мс)",
+            [tempo_traceql('{ resource.service.name = "order-api" && kind = server && duration > 250ms }')],
+            ds=TEMPO, w=12, h=9, overrides=trace_overrides)
+    d.table("Повільні SQL-запити (> 100 мс)",
+            [tempo_traceql('{ span.db.system = "postgresql" && duration > 100ms }')],
+            ds=TEMPO, w=12, h=9, overrides=trace_overrides)
+
+    d.row("Метрики зі спанів (span metrics)")
+    d.timeseries("Частота спанів за сервісами (server / consumer)", [
+        target('sum by (service) (rate(traces_spanmetrics_calls_total{span_kind=~"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER"}[1m]))',
+               "{{service}}"),
+    ], unit="ops", w=8)
+    d.timeseries("p95 тривалості спанів за операціями", [
+        target('histogram_quantile(0.95, sum by (le, service, span_name) (rate(traces_spanmetrics_latency_bucket'
+               '{span_kind=~"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER"}[5m])))', "{{service}}: {{span_name}}"),
+    ], unit="s", w=8)
+    d.timeseries("Частка спанів з помилкою", [
+        target('sum by (service) (rate(traces_spanmetrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m])) / '
+               'sum by (service) (rate(traces_spanmetrics_calls_total[5m]))', "{{service}}"),
+    ], unit="percentunit", w=8)
+    return d
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     postgres_dashboard().write(OUT, "postgres.json")
     application_dashboard().write(OUT, "application.json")
+    logs_traces_dashboard().write(OUT, "logs-traces.json")
 
 
 if __name__ == "__main__":

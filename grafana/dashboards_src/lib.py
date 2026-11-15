@@ -176,6 +176,20 @@ class Dashboard:
             "current": current, "hide": 0,
         })
 
+    def loki_label_var(self, name: str, label: str, loki_label: str, stream: str) -> None:
+        self.variables.append({
+            "type": "query", "name": name, "label": label, "datasource": LOKI,
+            "query": {"label": loki_label, "stream": stream, "type": 1,
+                      "refId": "LokiVariableQueryEditor-VariableQuery"},
+            "definition": f"label_values({stream}, {loki_label})",
+            "refresh": 2, "sort": 1, "multi": True, "includeAll": True, "allValue": ".*",
+            "current": {"text": ["All"], "value": ["$__all"]}, "hide": 0,
+        })
+
+    def textbox_var(self, name: str, label: str, default: str = "") -> None:
+        self.variables.append({"type": "textbox", "name": name, "label": label, "query": default,
+                               "current": {"text": default, "value": default}, "hide": 0})
+
     def link(self, title: str, tags: list[str]) -> None:
         self.links.append({"title": title, "type": "dashboards", "tags": tags, "asDropdown": False,
                            "includeVars": False, "keepTime": True, "targetBlank": False, "icon": "external link"})

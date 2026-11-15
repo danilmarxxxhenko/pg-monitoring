@@ -861,7 +861,7 @@
             "uid": "prometheus"
           },
           "refId": "A",
-          "expr": "sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\",status=~\"4..\"}[1m])) / sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\"}[1m]))",
+          "expr": "(sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\",status=~\"4..\"}[1m])) or vector(0)) / sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\"}[1m]))",
           "legendFormat": "4xx",
           "range": true,
           "instant": false,
@@ -873,7 +873,7 @@
             "uid": "prometheus"
           },
           "refId": "B",
-          "expr": "sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\",status=~\"5..\"}[1m])) / sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\"}[1m])) or vector(0)",
+          "expr": "(sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\",status=~\"5..\"}[1m])) or vector(0)) / sum(rate(http_request_duration_seconds_count{job=\"order-api\",route!~\"/metrics|/health\"}[1m]))",
           "legendFormat": "5xx",
           "range": true,
           "instant": false,

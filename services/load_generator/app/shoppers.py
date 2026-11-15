@@ -8,6 +8,8 @@ import random
 from collections import deque
 
 import httpx
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 
 from .catalog import SEARCH_TERMS, Catalog
 from .chaos import chaos
@@ -15,6 +17,7 @@ from .config import settings
 from .metrics import REQUEST_DURATION, timed
 
 log = logging.getLogger(__name__)
+_tracer = trace.get_tracer("load-generator.shoppers")
 
 
 class ApiSession:
@@ -123,7 +126,12 @@ class Shopper:
             await asyncio.sleep(random.expovariate(per_user_rate))
             action = random.choices(funcs, weights)[0]
             try:
-                await action()
+                # Root span: the distributed trace starts here, at the "customer"
+                with _tracer.start_as_current_span(f"shopper.{action.__name__}", kind=SpanKind.CLIENT,
+                                                   attributes={"shopper.id": self.n,
+                                                               "customer.id": self.customer_id,
+                                                               "chaos.mode": chaos.mode}):
+                    await action()
             except asyncio.CancelledError:
                 raise
             except httpx.HTTPError as exc:

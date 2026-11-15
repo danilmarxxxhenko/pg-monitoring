@@ -1,7 +1,17 @@
 fastapi==0.163.1
 httpx==0.28.1
+aio-pika==10.2.3
 uvicorn==0.54.0
 psycopg[binary,pool]==3.3.9
 psycopg-pool==3.3.3
 prometheus-client==0.26.0
 opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-instrumentation==0.66b2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-asgi==0.66b2
+opentelemetry-instrumentation-psycopg==0.66b2
+opentelemetry-instrumentation-dbapi==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+opentelemetry-instrumentation-aio-pika==0.66b2

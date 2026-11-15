@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 
 from common.logging import setup_logging
 from common.metrics import HttpMetricsMiddleware, metrics_response
+from common.telemetry import setup_tracing
 
 from .auth import Principal, require_user
 from .config import settings
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="order-api", version="1.0.0", lifespan=lifespan)
 app.add_middleware(HttpMetricsMiddleware)
+setup_tracing(settings.service_name, fastapi_app=app, httpx_client=True, psycopg=True, aio_pika=True)
 
 User = Annotated[Principal, Depends(require_user)]
 

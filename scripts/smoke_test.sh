@@ -38,6 +38,39 @@ consumers=$(prom_get '/api/v1/query?query=sum(rabbitmq_queue_consumers%7Bqueue%3
 import sys, json; r = json.load(sys.stdin)["data"]["result"]; print(int(float(r[0]["value"][1])) if r else 0)')
 if [[ "$consumers" -gt 0 ]]; then pass "payments queue has $consumers consumer(s)"; else fail "payments queue has no consumers"; fi
 
+echo "== Loki"
+curl_net() { docker run --rm --network "${COMPOSE_PROJECT_NAME:-pgmon}_default" curlimages/curl:8.23.0 -s -G "$@"; }
+counts=$(curl_net --data-urlencode 'query=sum by (service) (count_over_time({project="pgmon"}[1h]))' \
+  http://loki:3100/loki/api/v1/query | python3 -c '
+import sys, json
+print(" ".join(r["metric"]["service"] for r in json.load(sys.stdin)["data"]["result"] if float(r["value"][1]) > 0))')
+missing=""
+for svc in $($COMPOSE ps --services); do
+  [[ " $counts " == *" $svc "* ]] || missing="$missing $svc"
+done
+if [[ -z "$missing" ]]; then pass "Loki has logs of every service ($(wc -w <<<"$counts" | tr -d ' '))"; else fail "no logs in Loki for:$missing"; fi
+
+echo "== Tempo"
+now=$(date +%s)
+trace=$(curl_net --data-urlencode 'q={ resource.service.name = "worker" }' --data-urlencode 'limit=1' \
+  --data-urlencode "start=$((now - 600))" --data-urlencode "end=$now" http://tempo:3200/api/search | python3 -c '
+import sys, json; t = json.load(sys.stdin).get("traces", []); print(t[0]["traceID"] if t else "")')
+if [[ -n "$trace" ]]; then
+  services=$(curl_net "http://tempo:3200/api/traces/$trace" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+names = {a["value"]["stringValue"] for b in d["batches"] for a in b["resource"]["attributes"] if a["key"] == "service.name"}
+print(",".join(sorted(names)))')
+  pass "trace $trace passes through worker (services: $services)"
+  if [[ "$services" == *load-generator* && "$services" == *order-api* ]]; then
+    pass "trace is end-to-end: load-generator -> order-api -> worker"
+  else
+    fail "trace is not end-to-end: $services"
+  fi
+else
+  fail "no trace through worker in the last 10 minutes"
+fi
+
 echo "== Orders"
 last_id=$(psql_q "SELECT coalesce(max(id), 0) FROM orders")
 sleep 20
