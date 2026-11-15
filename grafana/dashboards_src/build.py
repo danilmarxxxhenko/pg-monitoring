@@ -25,30 +25,27 @@ def postgres_dashboard() -> Dashboard:
     d.stat("Стан СУБД", "pg_up", mappings=mapping_up_down(), graph=False, color_mode="background",
            thresholds=[("red", None), ("green", 1)], w=3)
     d.stat("Розмір БД", f"pg_database_size_bytes{{{DB}}}", unit="bytes", w=3)
-    d.gauge("Використання з'єднань",
+    d.gauge("З'єднання",
             "sum(pg_stat_activity_count) / max(pg_settings_max_connections)",
-            thresholds=[("green", None), ("orange", 0.4), ("red", 0.5)], w=3,
-            description="Усі backend-и відносно max_connections; алерт — понад 50%")
-    d.gauge("Cache hit ratio",
+            thresholds=[("green", None), ("orange", 0.4), ("red", 0.5)], w=3)
+    d.gauge("Кеш",
             f"sum(rate(pg_stat_database_blks_hit{{{DB}}}[5m])) / "
             f"(sum(rate(pg_stat_database_blks_hit{{{DB}}}[5m])) + sum(rate(pg_stat_database_blks_read{{{DB}}}[5m])))",
-            min_=0.8, max_=1, thresholds=[("red", None), ("orange", 0.9), ("green", 0.99)], w=3,
-            description="Частка читань блоків із shared_buffers (без звернення до диска)")
+            min_=0.8, max_=1, thresholds=[("red", None), ("orange", 0.9), ("green", 0.99)], w=3)
     d.stat("TPS", f"sum(rate(pg_stat_database_xact_commit{{{DB}}}[1m]) + rate(pg_stat_database_xact_rollback{{{DB}}}[1m]))",
            unit="ops", decimals=1, w=3)
-    d.stat("Deadlocks за період", f"sum(increase(pg_stat_database_deadlocks{{{DB}}}[$__range]))",
+    d.stat("Deadlocks", f"sum(increase(pg_stat_database_deadlocks{{{DB}}}[$__range]))",
            thresholds=[("green", None), ("red", 1)], decimals=0, graph=False, w=3)
-    d.stat("Найдовша транзакція", f"max(pg_stat_activity_max_tx_duration{{{DB}}})", unit="s",
+    d.stat("Найдовша tx", f"max(pg_stat_activity_max_tx_duration{{{DB}}})", unit="s",
            thresholds=[("green", None), ("orange", 5), ("red", 30)], decimals=1, w=3)
-    d.stat("Очікують на блокування",
+    d.stat("Очікують",
            f'sum(pg_stat_activity_count{{{DB},wait_event_type="Lock"}}) or vector(0)',
-           thresholds=[("green", None), ("orange", 1), ("red", 5)], decimals=0, w=3,
-           description="Сесії в стані очікування lock (wait_event_type = Lock)")
+           thresholds=[("green", None), ("orange", 1), ("red", 5)], decimals=0, w=3)
 
     # ---------------------------------------------------- connections & tx
     d.row("З'єднання та транзакції")
     d.timeseries("З'єднання за станами", [
-        target(f'sum by (state) (pg_stat_activity_count{{{DB}}})', "{{state}}"),
+        target(f'sum by (state) (pg_stat_activity_count{{{DB},state!~"disabled|fastpath function call"}})', "{{state}}"),
         target("max(pg_settings_max_connections)", "max_connections", "B"),
     ], stack=False, description="pg_stat_activity, згруповано за state",
         overrides=[{"matcher": {"id": "byName", "options": "max_connections"},
@@ -78,15 +75,16 @@ def postgres_dashboard() -> Dashboard:
         target(f'sum by (wait_event_type) (pg_stat_activity_count{{{DB},state="active",wait_event_type!=""}})',
                "{{wait_event_type}}"),
     ], stack=True, w=8)
-    d.timeseries("Deadlocks", [
+    d.timeseries("Deadlocks за хвилину", [
         target(f"sum(increase(pg_stat_database_deadlocks{{{DB}}}[1m]))", "deadlocks / хв"),
     ], w=8, draw="bars", fill=80, thresholds=[("transparent", None), ("red", 1)])
     d.timeseries("Тривалість найдовшої транзакції", [
         target(f'max by (state) (pg_stat_activity_max_tx_duration{{{DB},state!~"disabled|fastpath function call"}})', "{{state}}"),
     ], unit="s", w=12)
-    d.timeseries("Довгі транзакції (> 60 с)", [
+    d.timeseries("Незавершені транзакції", [
         target("pg_long_running_transactions", "транзакцій"),
-    ], w=12)
+    ], w=12, description="Транзакції не в стані idle на момент опитування (pg_long_running_transactions). "
+                         "Під час конкуренції за блокування вони накопичуються.")
 
     # ----------------------------------------------------------- row ops
     d.row("Операції з рядками та таблиці")
@@ -133,7 +131,7 @@ def postgres_dashboard() -> Dashboard:
             {"id": "filterByValue", "options": {"filters": [{"fieldName": "Value #A", "config": {"id": "isNull"}}],
                                                 "type": "exclude", "match": "any"}},
             {"id": "organize", "options": {
-                "excludeByName": {"Time": True},
+                "excludeByName": {"Time": True, "queryid": True},
                 "indexByName": {"Value #A": 0, "Value #B": 1, "Value #C": 2, "user": 3, "queryid": 4, "query": 5},
                 "renameByName": {"Value #A": "Середній час", "Value #B": "Викликів/с",
                                  "Value #C": "Час у БД (с/с)", "user": "Роль", "query": "Запит"}}},
@@ -180,7 +178,7 @@ def application_dashboard() -> Dashboard:
 
     d.row("Огляд")
     d.stat("RPS", f"sum(rate(http_request_duration_seconds_count{{{API}}}[1m]))", unit="reqps", decimals=1, w=4)
-    d.stat("p95 latency", _quantile(0.95), unit="s", decimals=3, w=4,
+    d.stat("p95 latency", _quantile(0.95), unit="s", decimals=1, w=4,
            thresholds=[("green", None), ("orange", 0.3), ("red", 0.5)])
     d.stat("Частка помилок 5xx",
            f'sum(rate(http_request_duration_seconds_count{{{API},status=~"5.."}}[5m])) / '
@@ -299,6 +297,7 @@ def logs_traces_dashboard() -> Dashboard:
     d.loki_label_var("service", "Сервіс", "service", '{project="pgmon"}')
     d.loki_label_var("level", "Рівень", "level", '{project="pgmon"}')
     d.textbox_var("search", "Пошук (текст / trace_id)")
+    d.textbox_var("trace_id", "Trace ID")
     d.link("Інші дашборди", ["pgmon"])
 
     d.text("**Як користуватися.** У рядку логу натисніть **trace_id → Відкрити трейс у Tempo**. "
@@ -339,6 +338,11 @@ def logs_traces_dashboard() -> Dashboard:
             [tempo_traceql('{ span.db.system = "postgresql" && duration > 100ms }')],
             ds=TEMPO, w=12, h=9, overrides=trace_overrides)
 
+    d.custom({"type": "traces", "title": "Трейс за ID", "datasource": TEMPO,
+              "description": "Вставте trace_id у змінну Trace ID угорі дашборда",
+              "targets": [{"datasource": TEMPO, "refId": "A", "queryType": "traceql", "query": "${trace_id}"}],
+              "options": {}}, w=24, h=16)
+
     d.row("Метрики зі спанів (span metrics)")
     d.timeseries("Частота спанів за сервісами (server / consumer)", [
         target('sum by (service) (rate(traces_spanmetrics_calls_total{span_kind=~"SPAN_KIND_SERVER|SPAN_KIND_CONSUMER"}[1m]))',
@@ -367,13 +371,13 @@ def security_dashboard() -> Dashboard:
            decimals=0, graph=False, w=4)
     d.stat("Невдалі входи", f'sum(increase(auth_login_total{{result!="success"}}{rng})) or vector(0)',
            decimals=0, graph=False, w=4, thresholds=[("green", None), ("orange", 5), ("red", 20)])
-    d.stat("Заблоковано (throttling)", f'sum(increase(auth_login_total{{result="throttled"}}{rng})) or vector(0)',
+    d.stat("Заблоковано", f'sum(increase(auth_login_total{{result="throttled"}}{rng})) or vector(0)',
            decimals=0, graph=False, w=4, thresholds=[("green", None), ("red", 1)],
            description="Спроби після 10 невдалих входів за 5 хв з тієї ж IP для того ж логіна (HTTP 429)")
-    d.stat("Відмови 401 (немає / недійсна сесія)",
+    d.stat("Відмови 401",
            f'sum(increase(auth_denied_total{{reason=~"missing|invalid|expired|revoked|inactive"}}{rng})) or vector(0)',
            decimals=0, graph=False, w=4)
-    d.stat("Відмови 403 (недостатньо прав)", f'sum(increase(auth_denied_total{{reason="forbidden"}}{rng})) or vector(0)',
+    d.stat("Відмови 403", f'sum(increase(auth_denied_total{{reason="forbidden"}}{rng})) or vector(0)',
            decimals=0, graph=False, w=4, thresholds=[("green", None), ("orange", 1)])
     d.custom({"type": "piechart", "title": "Користувачі за ролями", "datasource": PROM,
               "targets": [target("sum by (role) (auth_users)", "{{role}}", instant=True)],
@@ -407,14 +411,19 @@ def security_dashboard() -> Dashboard:
     ], w=8)
 
     d.row("Аналіз атак")
-    d.bargauge("Топ IP за невдалими входами", [
-        loki_target(f'topk(10, sum by (client_ip) (count_over_time({{service="auth"}} | json | event="login_failed" {rng})))',
-                    legend="{{client_ip}}", query_type="instant"),
-    ], ds=LOKI, w=8, h=8)
-    d.bargauge("Топ логінів, які намагаються підібрати", [
-        loki_target(f'topk(10, sum by (username) (count_over_time({{service="auth"}} | json | event="login_failed" {rng})))',
-                    legend="{{username}}", query_type="instant"),
-    ], ds=LOKI, w=8, h=8)
+    for title, label, header in (("Топ IP за невдалими входами", "client_ip", "IP-адреса"),
+                                 ("Топ логінів, які намагаються підібрати", "username", "Логін")):
+        d.table(title, [
+            loki_target(f'topk(10, sum by ({label}) (count_over_time({{service="auth"}} | json | event="login_failed" {rng})))',
+                        query_type="instant"),
+        ], ds=LOKI, w=8, h=8, sort_by="Невдалих спроб", transformations=[
+            {"id": "labelsToFields", "options": {"mode": "columns"}},
+            {"id": "merge", "options": {}},
+            {"id": "organize", "options": {
+                "excludeByName": {"Time": True},
+                "indexByName": {label: 0, "Value": 1, "Value #A": 1},
+                "renameByName": {label: header, "Value": "Невдалих спроб", "Value #A": "Невдалих спроб"}}},
+        ])
     d.timeseries("Навантаження на вході (nginx)", [
         target("sum(rate(nginx_http_requests_total[1m]))", "запитів/с"),
         target("sum(nginx_connections_active)", "активні з'єднання", "B"),
@@ -469,7 +478,7 @@ def alert_rules(pg: Dashboard, app: Dashboard, sec: Dashboard) -> dict:
                           "та сесії idle in transaction на дашборді «СУБД PostgreSQL»."),
         _rule("pg-deadlocks", "Виявлено deadlock у PostgreSQL",
               'sum(increase(pg_stat_database_deadlocks{datname="shop"}[2m]))', "gt", 0,
-              for_="0s", severity="warning", dash=pg, panel="Deadlocks",
+              for_="0s", severity="warning", dash=pg, panel="Deadlocks за хвилину",
               summary="PostgreSQL перервав транзакції через взаємне блокування",
               description="За 2 хв зафіксовано {{ $values.B.Value }} deadlock(ів)."),
         _rule("api-p95-latency", "p95 латентності Order API вище порогу",

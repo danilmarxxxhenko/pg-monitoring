@@ -109,6 +109,17 @@ flowchart LR
           [worker] SELECT … FOR UPDATE / UPDATE ← PostgreSQL
 ```
 
+### Як це виглядає
+
+| | |
+|---|---|
+| ![Дашборд «СУБД PostgreSQL»](docs/img/fig_dash_postgres.png) | ![Дашборд «Застосунок»](docs/img/fig_dash_application.png) |
+| Дашборд «СУБД PostgreSQL» | Дашборд «Застосунок» |
+| ![Exemplars на графіку латентності](docs/img/fig_latency_exemplars.png) | ![Трейс у Tempo](docs/img/fig_trace.png) |
+| Режим `slow_queries`: exemplars і спрацювання алерту | Повільний трейс: generator → order-api → auth → PostgreSQL |
+
+Усі скриншоти лежать у [docs/img/](docs/img/). Перегенерувати їх можна командою `scripts/screenshots.sh`: headless Chromium у контейнері Playwright сам входить у систему й по черзі вмикає режими хаосу.
+
 ---
 
 ## Запуск
@@ -329,8 +340,8 @@ make chaos MODE=off
 │   ├── grafana.ini           # auth.proxy, вимкнений логін
 │   ├── dashboards_src/       # генератор дашбордів і алертів
 │   └── provisioning/         # datasources, dashboards, alerting
-├── scripts/                  # init_env.sh, smoke_test.sh
-└── docs/report.md            # чернетка пояснювальної записки
+├── scripts/                  # init_env.sh, smoke_test.sh, screenshots.sh
+└── docs/                     # report.docx (записка за ДСТУ 3008:2015), report.md, img/
 ```
 
 ---

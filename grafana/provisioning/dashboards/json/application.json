@@ -180,7 +180,7 @@
             "mode": "thresholds"
           },
           "mappings": [],
-          "decimals": 3
+          "decimals": 1
         },
         "overrides": []
       },
@@ -1513,7 +1513,7 @@
             },
             "axisSoftMin": 0,
             "thresholdsStyle": {
-              "mode": "line+area"
+              "mode": "dashed"
             }
           },
           "thresholds": {

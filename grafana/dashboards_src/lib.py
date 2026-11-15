@@ -75,7 +75,7 @@ class Dashboard:
                   "spanNulls": True, "stacking": {"mode": "normal" if stack else "none", "group": "A"},
                   "axisSoftMin": min_}
         if thresholds:
-            custom["thresholdsStyle"] = {"mode": "line+area"}
+            custom["thresholdsStyle"] = {"mode": "dashed"}
         defaults = {"unit": unit, "custom": custom,
                     "thresholds": _thresholds(thresholds or [("green", None)])}
         if min_ is not None:

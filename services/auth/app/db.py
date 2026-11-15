@@ -49,8 +49,9 @@ def connect():
     conn = sqlite3.connect(settings.db_path, timeout=5, isolation_level=None)
     conn.row_factory = sqlite3.Row
     try:
-        conn.cursor().execute("PRAGMA foreign_keys = ON")
-        conn.cursor().execute("PRAGMA busy_timeout = 5000")
+        # Connection-level execute is not traced: keeps PRAGMA noise out of traces
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
         yield conn
     finally:
         conn.close()

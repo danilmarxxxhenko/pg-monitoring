@@ -16,6 +16,7 @@ change and every 15 s, so services that restart converge to it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import random
@@ -47,6 +48,16 @@ MODES = (
 GUESSED_USERS = ("admin", "root", "administrator", "postgres", "test", "user", "guest", "operator")
 
 
+def _background(coro, name: str) -> asyncio.Task:
+    """Start a long-lived task with an empty context.
+
+    asyncio copies contextvars into new tasks; a task started from the
+    POST /chaos handler would otherwise inherit that request's span, and every
+    iteration would end up in one endless trace.
+    """
+    return asyncio.create_task(coro, name=name, context=contextvars.Context())
+
+
 class ChaosController:
     def __init__(self) -> None:
         self.mode = "off"
@@ -67,7 +78,7 @@ class ChaosController:
         self._connection = await mq.connect(settings.service_name)
         channel = await self._connection.channel()
         self._exchange = await mq.declare_control(channel)
-        self._heartbeat = asyncio.create_task(self._broadcast_loop())
+        self._heartbeat = _background(self._broadcast_loop(), "chaos-heartbeat")
 
     async def close(self) -> None:
         await self._stop_mode_tasks()
@@ -90,7 +101,7 @@ class ChaosController:
         if mode == "lock_contention":
             await self._start_lock_contention()
         elif mode == "brute_force":
-            self._tasks.append(asyncio.create_task(self._brute_force(), name="chaos-brute-force"))
+            self._tasks.append(_background(self._brute_force(), "chaos-brute-force"))
         self._publish_gauge()
         await self._broadcast()
         log.warning("chaos mode changed", extra={"chaos_from": previous, "chaos_to": mode})
@@ -136,7 +147,7 @@ class ChaosController:
                                       f"application_name={settings.service_name}-chaos"),
             min_size=n, max_size=n, open=False)
         await self._lock_pool.open(wait=True, timeout=30)
-        self._tasks += [asyncio.create_task(self._lock_session(i), name=f"chaos-lock-{i}") for i in range(n)]
+        self._tasks += [_background(self._lock_session(i), f"chaos-lock-{i}") for i in range(n)]
 
     async def _lock_session(self, n: int) -> None:
         assert self._lock_pool is not None

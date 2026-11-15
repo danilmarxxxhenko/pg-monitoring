@@ -1,10 +1,10 @@
-# Пояснювальна записка (чернетка)
+# Пояснювальна записка
 
 **Тема:** Система моніторингу продуктивності СУБД PostgreSQL сервісу обробки замовлень інтернет-магазину
 
 **Дисципліна:** Інформаційні системи
 
-> Чернетка. Місця для скриншотів позначено `[Скриншот N: …]`. Перед здаванням вставте зображення, оформіть титульну сторінку, зміст і список джерел за вимогами кафедри.
+> Markdown-версія записки. Оформлений за ДСТУ 3008:2015 документ — [report.docx](report.docx). Скриншоти в `docs/img/` перегенеровує `scripts/screenshots.sh`.
 
 ---
 
@@ -42,25 +42,45 @@
 | Спостережуваність | `prometheus`, `postgres-exporter`, `nginx-exporter`, `alloy`, `loki`, `tempo`, `grafana` |
 
 ```mermaid
-flowchart LR
-    user([Користувач]) --> nginx
-    nginx -->|auth_request /verify| auth
-    nginx --> grafana
-    nginx --> api[order-api]
-    gen[load-generator] --> nginx
-    api --> auth
-    api --> pg[(PostgreSQL)]
-    api --> mq[(RabbitMQ)]
-    mq --> worker --> pg
-    gen --> pg
-    prom[(Prometheus)] -. scrape .-> api & worker & auth & gen & pgexp[postgres-exporter] & mq
-    pgexp --> pg
-    alloy[Alloy] --> loki[(Loki)] & tempo[(Tempo)]
-    tempo --> prom
-    grafana --> prom & loki & tempo
+flowchart TB
+    user([Користувач / браузер]) -->|HTTP :80| nginx
+    gen[load-generator<br/>віртуальні покупці, хаос] -->|HTTP| nginx
+
+    subgraph access[Доступ]
+        nginx[nginx<br/>auth_request] -->|/verify| auth[auth<br/>FastAPI + SQLite]
+    end
+
+    subgraph shop[Сервіс замовлень]
+        api[order-api<br/>FastAPI] -->|SQL| pg[(PostgreSQL 16)]
+        api -->|order.created| mq[(RabbitMQ)]
+        mq --> worker[worker<br/>оплати] -->|SQL| pg
+    end
+
+    subgraph obs[Моніторинг]
+        prom[(Prometheus<br/>TSDB)]
+        loki[(Loki)]
+        tempo[(Tempo)]
+        alloy[Alloy]
+        grafana[Grafana]
+        exp[postgres-exporter]
+    end
+
+    nginx -->|/api/| api
+    nginx -->|/grafana/| grafana
+    api -->|/verify| auth
+    gen -->|фонові SQL| pg
+    exp --> pg
+    prom -.->|scrape /metrics| exp
+    prom -.->|scrape /metrics| api
+    alloy -->|логи| loki
+    alloy -->|трейси| tempo
+    tempo -->|service graph| prom
+    grafana --> prom
+    grafana --> loki
+    grafana --> tempo
 ```
 
-[Скриншот 1: вивід `docker compose ps` — усі контейнери в стані healthy]
+![Стан контейнерів після запуску](img/fig_compose_ps.png)
 
 ### 1.2. Принципи побудови
 
@@ -267,11 +287,11 @@ Grafana Alloy знаходить контейнери проєкту через 
 load-generator → nginx → order-api → auth (+SQLite) → PostgreSQL → RabbitMQ → worker → PostgreSQL
 ```
 
-[Скриншот 2: наскрізний трейс у Tempo]
+![Трейс повільного запиту в Tempo](img/fig_trace.png)
 
 Metrics generator Tempo будує з трейсів **service graph** (`traces_service_graph_*`) і **span metrics** (`traces_spanmetrics_*`) та записує їх у Prometheus.
 
-[Скриншот 3: карта сервісів (service graph) на дашборді «Логи і трейси»]
+![Карта сервісів (service graph)](img/fig_service_graph.png)
 
 ### 4.4. Кореляція сигналів
 
@@ -282,9 +302,9 @@ Metrics generator Tempo будує з трейсів **service graph** (`traces_
 | трейс → лог | `tracesToLogsV2` у datasource Tempo (фільтр за `service` і `trace_id`) |
 | трейс → метрики | `tracesToMetrics` і service map |
 
-[Скриншот 4: exemplar на графіку латентності і перехід до трейсу]
+![Графік латентності з exemplars](img/fig_latency_exemplars.png)
 
-[Скриншот 5: рядок логу з посиланням «Відкрити трейс у Tempo»]
+![Логи одного трейсу з посиланням на Tempo](img/fig_logs_trace_link.png)
 
 ### 4.5. Візуалізація (Grafana)
 
@@ -297,11 +317,11 @@ Datasources, дашборди й алерти створюються з файл
 | Безпека | входи, відмови 401/403, throttling, джерела атак |
 | Логи і трейси | пошук логів, service graph, вибірки трейсів, span metrics |
 
-[Скриншот 6: дашборд «СУБД PostgreSQL»]
+![Дашборд «СУБД PostgreSQL»](img/fig_dash_postgres.png)
 
-[Скриншот 7: таблиця «Топ-10 повільних запитів» (pg_stat_statements)]
+![Найповільніші запити (pg_stat_statements)](img/fig_top_queries.png)
 
-[Скриншот 8: дашборд «Застосунок»]
+![Дашборд «Застосунок»](img/fig_dash_application.png)
 
 ### 4.6. Алерти
 
@@ -319,7 +339,7 @@ Datasources, дашборди й алерти створюються з файл
 
 Сповіщення надходять на webhook і записуються в лог (`event="alert"`), тож історія спрацювань доступна в Loki.
 
-[Скриншот 9: сторінка Alerting → Alert rules зі спрацьованим алертом]
+![Спрацьовані алерти](img/fig_alerts.png)
 
 ---
 
@@ -347,7 +367,7 @@ Datasources, дашборди й алерти створюються з файл
 
 Роль при кожній перевірці береться з БД, а не з токена, тому зміна ролі або деактивація користувача діють одразу.
 
-[Скриншот 10: сторінка входу]
+![Сторінка входу](img/fig_login.png)
 
 ### 5.2. Інтеграція з nginx і Grafana
 
@@ -366,7 +386,7 @@ Datasources, дашборди й алерти створюються з файл
 | Order API | 401 | ✓ | ✓ | ✓ |
 | CRUD користувачів | 401 | 403 | ✓ | 403 |
 
-[Скриншот 11: дашборд «Безпека» під час атаки підбором пароля]
+![Дашборд «Безпека» під час підбору пароля](img/fig_dash_security.png)
 
 ---
 
@@ -384,9 +404,9 @@ Datasources, дашборди й алерти створюються з файл
 
 Наведені значення виміряно під час тестування: кожен алерт перейшов у стан Firing через 80–140 с після ввімкнення режиму.
 
-[Скриншот 12: дашборд «СУБД PostgreSQL» у режимі lock_contention (блокування, deadlocks)]
+![Дашборд «СУБД PostgreSQL» у режимі lock_contention](img/fig_dash_postgres_locks.png)
 
-[Скриншот 13: черга RabbitMQ у режимі traffic_spike]
+![Черга оплат під час сплеску трафіку](img/fig_queue_spike.png)
 
 ### 6.1. Приклад розслідування інциденту
 
@@ -413,7 +433,7 @@ Datasources, дашборди й алерти створюються з файл
   - обробку замовлень.
 - Кожен етап розробки перевірявся повним перезапуском з видаленням даних (`docker compose down -v`).
 
-[Скриншот 14: результат `make smoke`]
+![Результат make smoke](img/fig_smoke.png)
 
 ---
 

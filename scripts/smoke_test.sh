@@ -77,10 +77,13 @@ if [[ "$consumers" -gt 0 ]]; then pass "payments queue has $consumers consumer(s
 
 echo "== Loki"
 curl_net() { docker run --rm --network "${COMPOSE_PROJECT_NAME:-pgmon}_default" curlimages/curl:8.23.0 -s -G "$@"; }
-counts=$(curl_net --data-urlencode 'query=sum by (service) (count_over_time({project="pgmon"}[1h]))' \
-  http://loki:3100/loki/api/v1/query | python3 -c '
+# Some services (exporters, Prometheus) log almost only at start-up, so look
+# at every service that has sent logs during the last 24 hours.
+now=$(date +%s)
+counts=$(curl_net --data-urlencode "start=$((now - 86400))000000000" --data-urlencode "end=${now}000000000" \
+  --data-urlencode 'query={project="pgmon"}' http://loki:3100/loki/api/v1/label/service/values | python3 -c '
 import sys, json
-print(" ".join(r["metric"]["service"] for r in json.load(sys.stdin)["data"]["result"] if float(r["value"][1]) > 0))')
+print(" ".join(json.load(sys.stdin)["data"]))')
 missing=""
 for svc in $($COMPOSE ps --services); do
   [[ " $counts " == *" $svc "* ]] || missing="$missing $svc"
